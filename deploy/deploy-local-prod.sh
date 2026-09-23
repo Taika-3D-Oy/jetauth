@@ -72,8 +72,8 @@ sed \
 # ── Build ────────────────────────────────────────────────────
 
 if [[ "${1:-}" != "--no-build" ]]; then
-  log "Building lattice-id (release, wasm32-wasip3)"
-  cargo build --workspace --target wasm32-wasip3 --release
+  log "Building lattice-id (release, wasm32-wasip2)"
+  cargo build --workspace --target wasm32-wasip2 --release
 
   log "Pushing components to local OCI registry"
   REGISTRY_PORT="${REGISTRY_PORT:-5001}"
@@ -81,7 +81,7 @@ if [[ "${1:-}" != "--no-build" ]]; then
   for comp in "${components[@]}"; do
     wasm="${comp//-/_}"
     wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/${comp}:dev" \
-      "target/wasm32-wasip3/release/${wasm}.wasm"
+      "target/wasm32-wasip2/release/${wasm}.wasm"
   done
 fi
 

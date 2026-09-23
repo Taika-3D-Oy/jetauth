@@ -562,11 +562,16 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
         .ok_or("MFA not configured for this user")?;
 
     // Try TOTP code first
-    if crate::totp::verify_totp(totp_secret, code.trim()) {
-        store::delete_mfa_pending(mfa_token).await?;
-        let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
-        let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
-        return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip).await;
+    if let Some(step) = crate::totp::verify_totp_step(totp_secret, code.trim()) {
+        let replay_key = format!("totp_used:{}:{}", user.id, step);
+        if store::record_totp_used(&replay_key, 90).await.unwrap_or(true) {
+            store::delete_mfa_pending(mfa_token).await?;
+            let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
+            let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
+            return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip).await;
+        } else {
+            return Ok(login_page(session_id, Some("TOTP code already used. Please wait for the next code.")).await);
+        }
     }
 
     // Try recovery codes — use CAS to prevent double-use across replicas
@@ -802,10 +807,9 @@ pub async fn complete_login_with_amr(
 
     crate::store::save_auth_code(&code, &auth_code).await?;
 
-    let mut redirect_url = format!("{}?code={code}", session.redirect_uri);
-    if !session.state.is_empty() {
-        redirect_url.push_str(&format!("&state={}", session.state));
-    }
+    let issuer = crate::get_issuer();
+    let redirect_url =
+        crate::util::build_auth_code_redirect(&session.redirect_uri, &code, &session.state, &issuer);
 
     // Set account session cookie so the user can visit /account later
     let mut builder = Response::builder()
@@ -1086,23 +1090,13 @@ pub async fn handle_consent(body_bytes: &[u8]) -> Result<Response<String>, Strin
     }
 
     // Approved — redirect with the auth code
-    let sep = if auth_code.redirect_uri.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
-    let mut redirect = format!(
-        "{}{}code={}",
-        auth_code.redirect_uri,
-        sep,
-        crate::util::percent_encode(code)
+    let issuer = crate::get_issuer();
+    let redirect = crate::util::build_auth_code_redirect(
+        &auth_code.redirect_uri,
+        code,
+        &auth_code.state,
+        &issuer,
     );
-    if !auth_code.state.is_empty() {
-        redirect.push_str(&format!(
-            "&state={}",
-            crate::util::percent_encode(&auth_code.state)
-        ));
-    }
 
     // Persist user consent for this client and requested scopes
     let requested_scopes: Vec<String> = auth_code

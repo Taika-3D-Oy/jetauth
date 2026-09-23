@@ -59,7 +59,7 @@ The application layer implements zero-trust identity verification, cryptographic
 - **Refresh Token Rotation**:
   - Every refresh token exchange issues a new refresh token and invalidates the old one.
   - If an invalidated refresh token is ever reused (indicating token theft), Lattice-ID immediately revokes the **entire token family** and terminates the user's active session.
-- **DPoP (Demonstrating Proof-of-Possession)**: Supported under RFC 9449 to bind tokens cryptographically to client private keys, mitigating token replay attacks.
+- **DPoP (Demonstrating Proof-of-Possession)**: Planned under RFC 9449 on the roadmap to bind tokens cryptographically to client private keys, mitigating token replay attacks.
 
 ### 2.4 Semantic Audit Trail (`lid-audit`)
 Every administrative action, authentication attempt, and client modification is recorded to an append-only NATS JetStream stream named `lid-audit`:
@@ -234,4 +234,4 @@ The physical and infrastructure layer guarantees data durability, physical secur
 | **Direct NATS State Inspection** | Tier 1 (Lattice-DB) | High-sensitivity tables (`users`, `credentials`) are stored as AES-256-GCM ciphertext in memory before hitting NATS. |
 | **Unauthorized Client / User Edit** | Tier 1 (Lattice-ID) | Operations require Superadmin OIDC session or Bearer token; all mutations are recorded to append-only `lid-audit`. |
 | **Stolen Refresh Token Replay** | Tier 1 (Token Engine) | Refresh token family reuse detection immediately terminates all active sessions for that token family. |
-| **Man-in-the-Middle (MitM) Attack** | Tier 1 & 2 (TLS / PKCE / DPoP) | Mutual TLS 1.3 in transit, PKCE S256 challenge validation, and DPoP cryptographic proof-of-possession. |
+| **Man-in-the-Middle (MitM) Attack** | Tier 1 & 2 (TLS / PKCE / DPoP Roadmap) | Mutual TLS 1.3 in transit, PKCE S256 challenge validation (with DPoP proof-of-possession planned). |

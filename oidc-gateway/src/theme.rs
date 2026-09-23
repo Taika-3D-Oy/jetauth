@@ -1,12 +1,43 @@
 use crate::store::{self, ClientTheme, RuntimeSettings};
 use crate::util;
 
-/// Sanitize custom CSS by stripping closing style tags to prevent HTML injection.
+/// Sanitize custom CSS by stripping closing style tags and scripts to prevent HTML injection.
 pub fn sanitize_custom_css(css: &str) -> String {
-    // Prevent breaking out of the <style> element
-    css.replace("</style>", "")
-        .replace("</Style>", "")
-        .replace("</STYLE>", "")
+    let lower = css.to_ascii_lowercase();
+    if !lower.contains("</style") && !lower.contains("<script") && !lower.contains("<!--") {
+        return css.to_string();
+    }
+    let mut out = String::with_capacity(css.len());
+    let mut chars = css.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        let rem_lower = &lower[idx..];
+        if rem_lower.starts_with("</style")
+            || rem_lower.starts_with("<script")
+            || rem_lower.starts_with("</script")
+        {
+            // Skip until '>' or end of string
+            for (_, c) in chars.by_ref() {
+                if c == '>' {
+                    break;
+                }
+            }
+        } else if rem_lower.starts_with("<!--") {
+            // Skip until '-->' or end of string
+            let mut dash_count = 0;
+            for (_, c) in chars.by_ref() {
+                if c == '-' {
+                    dash_count += 1;
+                } else if c == '>' && dash_count >= 2 {
+                    break;
+                } else {
+                    dash_count = 0;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Fallback base theme if none configured.
@@ -663,5 +694,19 @@ mod tests {
         let footer = render_footer(&theme, None);
         assert!(!footer.contains("Powered by"));
         assert!(footer.contains("© 2026 Taika 3D"));
+    }
+
+    #[test]
+    fn test_sanitize_custom_css_bypass() {
+        let input = "body { color: red; } </style ><script>alert('xss')</script> /* test */";
+        let sanitized = sanitize_custom_css(input);
+        assert!(!sanitized.to_ascii_lowercase().contains("</style"));
+        assert!(!sanitized.to_ascii_lowercase().contains("<script"));
+        assert!(sanitized.contains("body { color: red; }"));
+
+        let mixed = "/* ok */ </sTyLe   id=\"evil\"> <SCRIPT src=\"evil.js\"></script>";
+        let sanitized_mixed = sanitize_custom_css(mixed);
+        assert!(!sanitized_mixed.to_ascii_lowercase().contains("</style"));
+        assert!(!sanitized_mixed.to_ascii_lowercase().contains("<script"));
     }
 }

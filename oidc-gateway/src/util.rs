@@ -255,9 +255,68 @@ fn is_private_or_reserved_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
+/// RFC 9207 compliant authorization code redirection URL builder.
+/// Always includes the authorization code and the issuer identifier (`iss`).
+/// Preserves any existing query parameters in `redirect_uri` and appends `state` if present.
+pub fn build_auth_code_redirect(
+    redirect_uri: &str,
+    code: &str,
+    state: &str,
+    issuer: &str,
+) -> String {
+    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
+    let mut redirect = format!(
+        "{redirect_uri}{sep}code={}&iss={}",
+        percent_encode(code),
+        percent_encode(issuer)
+    );
+    if !state.is_empty() {
+        redirect.push_str(&format!("&state={}", percent_encode(state)));
+    }
+    redirect
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_auth_code_redirect() {
+        let url = build_auth_code_redirect(
+            "https://app.example.com/callback",
+            "xyz123",
+            "state_abc",
+            "https://id.example.com",
+        );
+        assert_eq!(
+            url,
+            "https://app.example.com/callback?code=xyz123&iss=https%3A%2F%2Fid.example.com&state=state_abc"
+        );
+
+        // Without state
+        let url_no_state = build_auth_code_redirect(
+            "https://app.example.com/callback",
+            "xyz123",
+            "",
+            "https://id.example.com",
+        );
+        assert_eq!(
+            url_no_state,
+            "https://app.example.com/callback?code=xyz123&iss=https%3A%2F%2Fid.example.com"
+        );
+
+        // With existing query parameter in redirect_uri
+        let url_with_query = build_auth_code_redirect(
+            "https://app.example.com/callback?foo=bar",
+            "xyz123",
+            "st",
+            "https://id.example.com",
+        );
+        assert_eq!(
+            url_with_query,
+            "https://app.example.com/callback?foo=bar&code=xyz123&iss=https%3A%2F%2Fid.example.com&state=st"
+        );
+    }
 
     #[test]
     fn test_is_safe_external_url() {

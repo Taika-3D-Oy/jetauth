@@ -30,12 +30,9 @@ pub fn otpauth_uri(secret_b32: &str, email: &str, issuer: &str) -> String {
     )
 }
 
-/// Verify a TOTP code. Allows ±1 time step for clock skew.
-pub fn verify_totp(secret_b32: &str, code: &str) -> bool {
-    let secret = match base32_decode(secret_b32) {
-        Some(s) => s,
-        None => return false,
-    };
+/// Verify a TOTP code and return the matching time step if valid. Allows ±1 time step for clock skew.
+pub fn verify_totp_step(secret_b32: &str, code: &str) -> Option<u64> {
+    let secret = base32_decode(secret_b32)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -47,10 +44,15 @@ pub fn verify_totp(secret_b32: &str, code: &str) -> bool {
     for step in [current_step.wrapping_sub(1), current_step, current_step + 1] {
         let expected = compute_totp(&secret, step);
         if constant_time_eq(code.as_bytes(), expected.as_bytes()) {
-            return true;
+            return Some(step);
         }
     }
-    false
+    None
+}
+
+/// Verify a TOTP code. Allows ±1 time step for clock skew.
+pub fn verify_totp(secret_b32: &str, code: &str) -> bool {
+    verify_totp_step(secret_b32, code).is_some()
 }
 
 /// Compute TOTP for a given time step (RFC 6238 / RFC 4226).

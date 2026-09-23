@@ -34,7 +34,7 @@ done
 
 ### Binary filenames: hyphens vs underscores
 
-Cargo's `wasm32-wasip3` target produces binary names that **match the package name** from `Cargo.toml`, using hyphens:
+Cargo produces binary names that **match the package name** from `Cargo.toml`, using hyphens:
 
 - Package `oidc-gateway` → `oidc_gateway.wasm` (cdylib, Cargo converts hyphens to underscores for libs)
 - Package `password-hasher` → `password_hasher.wasm` (cdylib)
@@ -51,7 +51,7 @@ Buckets are created by lattice-db on first access. Table names correspond to KV 
 
 ### Service components and wasi:cli/run
 
-The `wasm32-wasip3` target automatically generates the `wasi:cli/run` export via the command adapter. Services use `#[wstd::main]` with `wit_bindgen::generate!({ generate_all })`. You do **not** need to declare `export wasi:cli/run` in `world.wit` — doing so causes conflicts.
+Components compile for `wasm32-wasip2` using `wasip3` and `wit-bindgen`. You do **not** need to declare `export wasi:cli/run` in `world.wit` — doing so causes conflicts.
 
 ---
 
@@ -61,7 +61,7 @@ The `wasm32-wasip3` target automatically generates the `wasi:cli/run` export via
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Rust | nightly | `rustup install nightly && rustup target add wasm32-wasip3` |
+| Rust | stable (≥ 1.85) | `rustup target add wasm32-wasip2` |
 | wash | stock upstream | `cargo install wash-cli` |
 | Kind | 0.31+ | `brew install kind` |
 | kubectl | 1.30+ | `brew install kubectl` |
@@ -147,11 +147,11 @@ For manual redeployment (e.g. single component), the steps are:
 
 ```bash
 # 1. Build
-cargo build --workspace --target wasm32-wasip3 --release
+cargo build --workspace --target wasm32-wasip2 --release
 
 # 2. Push changed component(s)
 wash oci push --insecure localhost:5001/lattice-id/oidc-gateway:dev \
-  target/wasm32-wasip3/release/oidc_gateway.wasm
+  target/wasm32-wasip2/release/oidc_gateway.wasm
 
 # 3. Clear OCI cache on host pods
 for pod in $(kubectl get pods -l wasmcloud.com/hostgroup=default -o name); do

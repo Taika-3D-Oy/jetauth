@@ -127,7 +127,14 @@ pub fn render_layout(
                         if (!tc) return;
                         const div = document.createElement('div');
                         div.className = 'toast toast-' + (t.kind || 'info');
-                        div.innerHTML = '<span>' + (t.message || '') + '</span><button class="toast-close" onclick="this.parentElement.remove()">×</button>';
+                        const span = document.createElement('span');
+                        span.textContent = t.message || '';
+                        const btn = document.createElement('button');
+                        btn.className = 'toast-close';
+                        btn.textContent = '×';
+                        btn.onclick = function() { div.remove(); };
+                        div.appendChild(span);
+                        div.appendChild(btn);
                         tc.appendChild(div);
                         setTimeout(() => div.remove(), 4500);
                     });

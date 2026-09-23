@@ -90,11 +90,12 @@ mod templates {
     }
 
     pub fn html_body(event: &EmailEvent) -> String {
-        let name = if event.name.is_empty() {
+        let raw_name = if event.name.is_empty() {
             "there"
         } else {
             &event.name
         };
+        let name = html_escape(raw_name);
         let button_text = match event.event_type.as_str() {
             "verify_email" => "Verify Email",
             "password_reset" => "Reset Password",

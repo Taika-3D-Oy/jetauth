@@ -32,10 +32,11 @@ pub async fn handle_admin_route(
     }
 
     if path == "/admin/bootstrap" {
-        if method == Method::POST {
-            return handle_bootstrap_submit(body).await;
-        }
-        return views::bootstrap::render_bootstrap_page(None);
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("location", "/admin/login")
+            .body(String::new())
+            .unwrap();
     }
 
     // ── Public Auth Routes (Login, MFA, Logout) ──
@@ -973,6 +974,14 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
 // ── Bootstrap Handler ──────────────────────────────────────────
 
 async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
+    if crate::hooks::has_superadmin().await {
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("location", "/admin/login")
+            .body(String::new())
+            .unwrap();
+    }
+
     let form = parse_form(body);
     let email = form_value(&form, "email").unwrap_or("").trim();
     let password = form_value(&form, "password").unwrap_or("");
@@ -1246,8 +1255,18 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
     // Verify TOTP or recovery code
     let mut verified = false;
     if let Some(ref secret) = user.totp_secret {
-        if crate::totp::verify_totp(secret, code) {
-            verified = true;
+        if let Some(step) = crate::totp::verify_totp_step(secret, code) {
+            let replay_key = format!("totp_used:{}:{}", user.id, step);
+            if store::record_totp_used(&replay_key, 90).await.unwrap_or(true) {
+                verified = true;
+            } else {
+                return views::login::render_mfa_prompt(
+                    &user.email,
+                    mfa_token,
+                    return_target,
+                    Some("TOTP code already used. Please wait for the next code."),
+                );
+            }
         }
     }
 

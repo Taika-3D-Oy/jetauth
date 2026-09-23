@@ -95,29 +95,90 @@ fn populate_userinfo_claim(
     }
 }
 
+/// RFC 6750 §3.1 compliant error response for protected resources.
+fn unauthorized_response(
+    status: StatusCode,
+    error: Option<(&str, &str)>,
+) -> Response<String> {
+    let mut builder = Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("cache-control", "no-store");
+
+    match error {
+        Some((code, desc)) => {
+            builder = builder.header(
+                "www-authenticate",
+                format!("Bearer error=\"{code}\", error_description=\"{desc}\""),
+            );
+            let body = serde_json::json!({
+                "error": code,
+                "error_description": desc,
+            });
+            builder.body(body.to_string()).unwrap()
+        }
+        None => {
+            builder = builder.header("www-authenticate", "Bearer");
+            let body = serde_json::json!({
+                "error": "unauthorized",
+                "error_description": "missing authorization header",
+            });
+            builder.body(body.to_string()).unwrap()
+        }
+    }
+}
+
 /// Handle GET /userinfo — validate Bearer token, return user claims.
 /// Per OIDC Core §5.3.3: The access token MUST be validated (issuer, audience, type).
+/// Per RFC 6750 §3.1: Failed authentication MUST return 401 with WWW-Authenticate header.
 pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<String>, String> {
-    let token = extract_bearer(auth_header)?;
+    let token = match extract_bearer(auth_header) {
+        Ok(t) => t,
+        Err((status, code, desc)) => {
+            return Ok(unauthorized_response(status, code.map(|c| (c, desc))));
+        }
+    };
 
     // Verify JWT and extract claims.
-    // Pass audience=None: the token was issued by this authority.
-    // The access token's aud claim is the client_id, not a fixed
-    // "userinfo" value — OIDC Core §5.3.3 requires the OP to validate the token,
-    // which we do by checking issuer + token_type=access.
-    let claims =
-        crate::service_client::verify_token_scoped(&token, Some(issuer), None, Some("access"))
-            .await?;
+    let claims = match crate::service_client::verify_token_scoped(
+        &token,
+        Some(issuer),
+        None,
+        Some("access"),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(unauthorized_response(
+                StatusCode::UNAUTHORIZED,
+                Some(("invalid_token", &e)),
+            ));
+        }
+    };
 
-    let user_id = claims
-        .get("sub")
-        .and_then(|value| value.as_str())
-        .ok_or("missing subject claim")?;
-    let user = crate::store::get_user(user_id)
-        .await?
-        .ok_or("user not found")?;
+    let user_id = match claims.get("sub").and_then(|value| value.as_str()) {
+        Some(id) => id,
+        None => {
+            return Ok(unauthorized_response(
+                StatusCode::UNAUTHORIZED,
+                Some(("invalid_token", "missing subject claim")),
+            ));
+        }
+    };
+
+    let user = match crate::store::get_user(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return Ok(unauthorized_response(
+                StatusCode::UNAUTHORIZED,
+                Some(("invalid_token", "user not found")),
+            ));
+        }
+        Err(e) => return Err(format!("store error: {e}")),
+    };
+
     let requested_claims = requested_userinfo_claims(&claims);
-
     let mut userinfo = serde_json::Map::new();
     for requested in requested_claims {
         populate_userinfo_claim(&mut userinfo, &requested, &user, &claims);
@@ -131,11 +192,71 @@ pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<
         .unwrap())
 }
 
-fn extract_bearer(header: Option<&str>) -> Result<String, String> {
-    let header = header.ok_or("missing Authorization header")?;
+fn extract_bearer(
+    header: Option<&str>,
+) -> Result<String, (StatusCode, Option<&'static str>, &'static str)> {
+    let header = header.ok_or((
+        StatusCode::UNAUTHORIZED,
+        None,
+        "missing authorization header",
+    ))?;
     let token = header
         .strip_prefix("Bearer ")
         .or_else(|| header.strip_prefix("bearer "))
-        .ok_or("invalid Authorization header (expected Bearer)")?;
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            Some("invalid_request"),
+            "invalid Authorization header (expected Bearer)",
+        ))?;
     Ok(token.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_bearer_missing() {
+        let err = extract_bearer(None).unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.1, None);
+    }
+
+    #[test]
+    fn test_extract_bearer_wrong_scheme() {
+        let err = extract_bearer(Some("Basic dXNlcjpwYXNz")).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, Some("invalid_request"));
+    }
+
+    #[test]
+    fn test_extract_bearer_valid() {
+        let token = extract_bearer(Some("Bearer my.secret.token")).unwrap();
+        assert_eq!(token, "my.secret.token");
+        let token_lower = extract_bearer(Some("bearer my.other.token")).unwrap();
+        assert_eq!(token_lower, "my.other.token");
+    }
+
+    #[test]
+    fn test_unauthorized_response_missing_header() {
+        let resp = unauthorized_response(StatusCode::UNAUTHORIZED, None);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get("www-authenticate").unwrap(),
+            "Bearer"
+        );
+    }
+
+    #[test]
+    fn test_unauthorized_response_invalid_token() {
+        let resp = unauthorized_response(
+            StatusCode::UNAUTHORIZED,
+            Some(("invalid_token", "token expired")),
+        );
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get("www-authenticate").unwrap(),
+            "Bearer error=\"invalid_token\", error_description=\"token expired\""
+        );
+    }
 }

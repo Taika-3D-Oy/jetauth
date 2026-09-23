@@ -35,7 +35,7 @@ spec:
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
         - name: oidc-gateway
-          image: ghcr.io/taika-3d-oy/lattice-id/oidc-gateway:v1.10.0
+          image: ghcr.io/taika-3d-oy/lattice-id/oidc-gateway:v1.11.0
           imagePullPolicy: Always
           maxInvocations: 100
           localResources:
@@ -43,11 +43,11 @@ spec:
               config:
                 issuer_url: __ISSUER_URL__
         - name: password-hasher
-          image: ghcr.io/taika-3d-oy/lattice-id/password-hasher:v1.10.0
+          image: ghcr.io/taika-3d-oy/lattice-id/password-hasher:v1.11.0
           imagePullPolicy: Always
           maxInvocations: 8
         - name: email-worker
-          image: ghcr.io/taika-3d-oy/lattice-id/email-worker:v1.10.0
+          image: ghcr.io/taika-3d-oy/lattice-id/email-worker:v1.11.0
           imagePullPolicy: Always
           maxInvocations: 10
       hostInterfaces:

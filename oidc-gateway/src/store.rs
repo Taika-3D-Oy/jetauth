@@ -91,6 +91,8 @@ struct OidcConfigCache {
     refresh_absolute_max_secs: Option<String>,
     email_pepper: Option<String>,
     client_secret_pepper: Option<String>,
+    client_registration_mode: Option<String>,
+    client_registration_token: Option<String>,
 }
 
 /// Must be called once at startup / per request to load config values.
@@ -114,6 +116,8 @@ pub async fn init_config() {
     let refresh_absolute_max_secs = config_value_async("refresh_absolute_max_secs").await;
     let email_pepper = config_value_async("email_pepper").await;
     let client_secret_pepper = config_value_async("client_secret_pepper").await;
+    let client_registration_mode = config_value_async("client_registration_mode").await;
+    let client_registration_token = config_value_async("client_registration_token").await;
 
     CONFIG_CACHE.with(|c| {
         *c.borrow_mut() = Some(OidcConfigCache {
@@ -134,6 +138,8 @@ pub async fn init_config() {
             refresh_absolute_max_secs,
             email_pepper,
             client_secret_pepper,
+            client_registration_mode,
+            client_registration_token,
         });
     });
 }
@@ -159,15 +165,43 @@ pub fn init_config_for_test(dev_mode: bool, client_secret_pepper: Option<&str>) 
             refresh_absolute_max_secs: None,
             email_pepper: None,
             client_secret_pepper: client_secret_pepper.map(|s| s.to_string()),
+            client_registration_mode: None,
+            client_registration_token: None,
         });
     });
 }
 
-fn with_config<T>(f: impl FnOnce(&OidcConfigCache) -> T) -> T {
+#[cfg(test)]
+pub fn init_registration_config_for_test(mode: &str, token: Option<&str>) {
+    CONFIG_CACHE.with(|c| {
+        *c.borrow_mut() = Some(OidcConfigCache {
+            ldb_instance: "lid".to_string(),
+            lockout_threshold: None,
+            lockout_duration_secs: None,
+            keys_bucket: None,
+            tenant_bucket: None,
+            region_id: None,
+            internal_auth_secret: None,
+            region_domains: None,
+            region_internal_urls: None,
+            issuer_url: None,
+            dev_mode: None,
+            require_email_verification: None,
+            allow_registration: None,
+            bootstrap_hook: None,
+            refresh_absolute_max_secs: None,
+            email_pepper: None,
+            client_secret_pepper: Some("test_pepper_123456789012345678901234567890".to_string()),
+            client_registration_mode: Some(mode.to_string()),
+            client_registration_token: token.map(|s| s.to_string()),
+        });
+    });
+}
+
+fn with_config<T>(f: impl FnOnce(&OidcConfigCache) -> T) -> Option<T> {
     CONFIG_CACHE.with(|c| {
         let borrow = c.borrow();
-        let cfg = borrow.as_ref().expect("init_config() not called");
-        f(cfg)
+        borrow.as_ref().map(f)
     })
 }
 
@@ -198,8 +232,23 @@ pub fn config_value(key: &str) -> Option<String> {
         "refresh_absolute_max_secs" => c.refresh_absolute_max_secs.clone(),
         "email_pepper" => c.email_pepper.clone(),
         "client_secret_pepper" => c.client_secret_pepper.clone(),
+        "client_registration_mode" => c.client_registration_mode.clone(),
+        "client_registration_token" => c.client_registration_token.clone(),
         _ => None,
     })
+    .flatten()
+}
+
+/// Dynamic client registration mode: "disabled" (default), "open", or "protected".
+pub fn client_registration_mode() -> String {
+    config_value("client_registration_mode")
+        .unwrap_or_else(|| "disabled".to_string())
+        .to_lowercase()
+}
+
+/// Optional Bearer token required for RFC 7591 dynamic client registration when mode is "protected".
+pub fn client_registration_token() -> Option<String> {
+    config_value("client_registration_token").filter(|s| !s.trim().is_empty())
 }
 
 /// Maximum absolute lifetime of a refresh token family (regardless of rotation).
@@ -362,6 +411,8 @@ pub struct OidcClient {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub redirect_uris: Vec<String>,
+    #[serde(default)]
+    pub post_logout_redirect_uris: Vec<String>,
     pub grant_types: Vec<String>,
     pub name: String,
     #[serde(default)]
@@ -387,6 +438,7 @@ impl Default for OidcClient {
             client_id: String::new(),
             client_secret: None,
             redirect_uris: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
             grant_types: Vec::new(),
             name: "Unknown".to_string(),
             theme: None,
@@ -1150,14 +1202,20 @@ pub(crate) async fn kv_cas_raw(
     key: &str,
     value: &[u8],
     revision: u64,
+    ttl_seconds: Option<u64>,
 ) -> Result<(), String> {
     let value_b64 = B64.encode(value);
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "table": store_name,
         "key": key,
         "value": value_b64,
         "revision": revision,
     });
+    if let Some(ttl) = ttl_seconds {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("ttl_seconds".to_string(), serde_json::json!(ttl));
+        }
+    }
     ldb_request("cas", &payload).await?;
     Ok(())
 }
@@ -1776,7 +1834,20 @@ pub async fn list_clients() -> Result<Vec<OidcClient>, String> {
 }
 
 pub async fn delete_client(client_id: &str) -> Result<(), String> {
+    let _ = kv_delete(&clients_store(), &format!("reg_token:{client_id}")).await;
     kv_delete(&clients_store(), &format!("client:{client_id}")).await
+}
+
+pub async fn save_registration_token(client_id: &str, token_hash: &str) -> Result<(), String> {
+    kv_set(&clients_store(), &format!("reg_token:{client_id}"), &token_hash.to_string()).await
+}
+
+pub async fn get_registration_token(client_id: &str) -> Result<Option<String>, String> {
+    kv_get(&clients_store(), &format!("reg_token:{client_id}")).await
+}
+
+pub async fn delete_registration_token(client_id: &str) -> Result<(), String> {
+    kv_delete(&clients_store(), &format!("reg_token:{client_id}")).await
 }
 
 // ── Tenant operations ───────────────────────────────────────
@@ -1992,12 +2063,42 @@ pub async fn list_audit_events(
 ) -> Result<Vec<AuditEvent>, String> {
     let store_name = audit_store();
     let keys = kv_list_keys(&store_name).await?;
-    let mut events = Vec::new();
 
-    for key in keys {
-        if key.starts_with("audit:")
-            && let Some(event) = kv_get::<AuditEvent>(&store_name, &key).await?
-        {
+    // Extract timestamps from key names: "audit:<timestamp>:<rand>"
+    let mut parsed_keys: Vec<(u64, String)> = keys
+        .into_iter()
+        .filter_map(|k| {
+            if !k.starts_with("audit:") {
+                return None;
+            }
+            let mut parts = k.split(':');
+            parts.next()?; // "audit"
+            let ts = parts.next()?.parse::<u64>().ok()?;
+            Some((ts, k))
+        })
+        .collect();
+
+    // Pre-filter keys by timestamp before fetching payloads over TCP
+    if let Some(lower) = since {
+        parsed_keys.retain(|(ts, _)| *ts >= lower);
+    }
+    if let Some(upper) = until {
+        parsed_keys.retain(|(ts, _)| *ts <= upper);
+    }
+
+    // Sort descending by timestamp (newest first)
+    parsed_keys.sort_by(|(ts_a, _), (ts_b, _)| ts_b.cmp(ts_a));
+
+    let mut events = Vec::new();
+    let has_content_filter = actor_id.is_some() || target_id.is_some() || event_type.is_some();
+    let max_scan = if has_content_filter {
+        (limit * 5).max(200)
+    } else {
+        limit
+    };
+
+    for (_, key) in parsed_keys.into_iter().take(max_scan) {
+        if let Some(event) = kv_get::<AuditEvent>(&store_name, &key).await? {
             if let Some(actor) = actor_id
                 && event.actor_id != actor
             {
@@ -2013,17 +2114,10 @@ pub async fn list_audit_events(
             {
                 continue;
             }
-            if let Some(lower) = since
-                && event.timestamp < lower
-            {
-                continue;
-            }
-            if let Some(upper) = until
-                && event.timestamp > upper
-            {
-                continue;
-            }
             events.push(event);
+            if events.len() >= limit {
+                break;
+            }
         }
     }
 
@@ -2033,9 +2127,6 @@ pub async fn list_audit_events(
             .cmp(&left.timestamp)
             .then_with(|| left.event_type.cmp(&right.event_type))
     });
-    if events.len() > limit {
-        events.truncate(limit);
-    }
 
     Ok(events)
 }
@@ -2052,6 +2143,11 @@ pub async fn ensure_default_client() -> Result<(), String> {
         redirect_uris: vec![
             "http://localhost:8090/callback".to_string(),
             "http://localhost:3000/callback".to_string(),
+        ],
+        post_logout_redirect_uris: vec![
+            "http://localhost:8090/".to_string(),
+            "http://localhost:8090/callback".to_string(),
+            "http://localhost:3000/".to_string(),
         ],
         grant_types: vec![
             "authorization_code".to_string(),
@@ -2098,6 +2194,7 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
     let client = OidcClient {
         client_id: admin_id.to_string(),
         client_secret: existing_secret,
+        post_logout_redirect_uris: redirect_uris.clone(),
         redirect_uris,
         grant_types: vec![
             "authorization_code".to_string(),
@@ -2282,6 +2379,16 @@ pub async fn get_user_by_passkey(credential_id: &str) -> Result<Option<User>, St
     }
 }
 
+/// Record a consumed TOTP time-step atomically in sessions_store with a short TTL to prevent replay.
+/// Returns Ok(true) if newly recorded, or Ok(false) if already used.
+pub async fn record_totp_used(key: &str, ttl_seconds: u64) -> Result<bool, String> {
+    match kv_create_raw(&sessions_store(), key, b"1", Some(ttl_seconds)).await {
+        Ok(()) => Ok(true),
+        Err(e) if e.contains("already exists") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 // ── Account sessions (cookie-based, for /account pages) ─────
 
 #[derive(Serialize, Deserialize)]
@@ -2296,11 +2403,16 @@ pub struct AccountSession {
 
 pub async fn save_account_session(token: &str, session: &AccountSession) -> Result<(), String> {
     let hashed = sha256_hex(token);
+    let ttl = if session.expires_at > session.created_at {
+        session.expires_at - session.created_at
+    } else {
+        TTL_ACCOUNT_SESSION
+    };
     kv_set_ttl(
         &sessions_store(),
         &format!("acct:{hashed}"),
         session,
-        TTL_ACCOUNT_SESSION,
+        ttl,
     )
     .await
 }

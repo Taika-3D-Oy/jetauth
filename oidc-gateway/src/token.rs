@@ -694,24 +694,53 @@ pub async fn handle_revoke(
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
 
-    let token = get("token").ok_or("missing token")?;
+    let token = match get("token") {
+        Some(t) => t,
+        None => {
+            return Ok(token_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "missing token parameter",
+            ));
+        }
+    };
     let token_type_hint = get("token_type_hint");
-    let client_id = get("client_id");
+    let client_id = match get("client_id") {
+        Some(cid) => cid,
+        None => {
+            return Ok(token_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+                "client_id is required for revocation",
+            ));
+        }
+    };
     let client_secret = get("client_secret");
 
-    // Authenticate the client if credentials are provided (RFC 7009 §2.1).
-    // Public clients may revoke without a secret, but if a secret is given
-    // it must be valid.
-    if let Some(cid) = client_id {
-        let _ = verify_client(cid, client_secret).await?;
-    }
+    // Authenticate the client (RFC 7009 §2.1).
+    let client = match verify_client(client_id, client_secret).await {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(token_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+                "client authentication failed",
+            ));
+        }
+    };
 
-    // Try to revoke as refresh token first (most common case)
+    // Try to revoke as refresh token first (most common case).
+    // Verify that the token was issued to the authenticated client (RFC 7009 §2.1).
     let revoked_refresh = if token_type_hint != Some("access_token") {
         let hash = hex_sha256(token);
-        if store::get_refresh_token(&hash).await?.is_some() {
-            store::delete_refresh_token(&hash).await?;
-            true
+        if let Some(entry) = store::get_refresh_token(&hash).await? {
+            if entry.client_id == client.client_id {
+                store::delete_refresh_token(&hash).await?;
+                true
+            } else {
+                // Per RFC 7009 §2.2, if token belongs to another client, do not revoke.
+                false
+            }
         } else {
             false
         }
@@ -720,9 +749,15 @@ pub async fn handle_revoke(
     };
 
     // Per RFC 7009, always return 200 OK regardless of whether the token was found
-    // (to prevent token existence probing)
+    // (to prevent token existence probing).
     if revoked_refresh {
-        let _ = store::log_audit("token_revoked", "", "", "refresh_token").await;
+        let _ = store::log_audit(
+            "token_revoked",
+            "",
+            &client.client_id,
+            "refresh_token",
+        )
+        .await;
     }
 
     Ok(Response::builder()
@@ -765,7 +800,7 @@ pub async fn handle_introspect(
                 .status(StatusCode::UNAUTHORIZED)
                 .header("content-type", "application/json")
                 .header("cache-control", "no-store")
-                .header("www-authenticate", "Bearer realm=\"token-introspection\"")
+                .header("www-authenticate", "Basic realm=\"token-introspection\"")
                 .body(r#"{"error":"invalid_client"}"#.to_string())
                 .unwrap());
         }
@@ -1219,5 +1254,27 @@ mod tests {
         let matches_wrong: bool = hmac_hash.as_bytes().ct_eq(wrong_hmac.as_bytes()).into();
         let matches_wrong_legacy: bool = legacy_stored.as_bytes().ct_eq(wrong_secret.as_bytes()).into();
         assert!(!matches_wrong && !matches_wrong_legacy);
+    }
+
+    #[test]
+    fn test_handle_revoke_missing_token() {
+        futures::executor::block_on(async {
+            let body = b"client_id=test-client";
+            let resp = super::handle_revoke(body, None).await.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+            let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
+            assert_eq!(val["error"], "invalid_request");
+        });
+    }
+
+    #[test]
+    fn test_handle_revoke_missing_client_id() {
+        futures::executor::block_on(async {
+            let body = b"token=some-token-value";
+            let resp = super::handle_revoke(body, None).await.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+            let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
+            assert_eq!(val["error"], "invalid_client");
+        });
     }
 }

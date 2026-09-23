@@ -157,20 +157,20 @@ EOF
 # ── Build & Push ─────────────────────────────────────────────
 
 build_and_push() {
-  log "Building lattice-id workspace (release, wasm32-wasip3)"
-  cargo build --workspace --target wasm32-wasip3 --release
+  log "Building lattice-id workspace (release, wasm32-wasip2)"
+  cargo build --workspace --target wasm32-wasip2 --release
 
   log "Pushing components to local registry"
   local components=(oidc-gateway password-hasher email-worker)
   for comp in "${components[@]}"; do
     local wasm
-    if [[ -f "target/wasm32-wasip3/release/${comp}.wasm" ]]; then
+    if [[ -f "target/wasm32-wasip2/release/${comp}.wasm" ]]; then
       wasm="${comp}"
     else
       wasm="${comp//-/_}"
     fi
     wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/${comp}:dev" \
-      "target/wasm32-wasip3/release/${wasm}.wasm"
+      "target/wasm32-wasip2/release/${wasm}.wasm"
   done
 }
 

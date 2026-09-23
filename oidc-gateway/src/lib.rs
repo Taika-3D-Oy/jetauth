@@ -34,6 +34,7 @@ mod management;
 mod management_tests;
 mod passkeys;
 mod region_authority;
+mod registration;
 mod service_client;
 mod social;
 mod store;
@@ -384,6 +385,9 @@ async fn handle(
         "/.well-known/openid-configuration" => {
             return Ok(discovery::openid_configuration(&issuer));
         }
+        "/.well-known/oauth-authorization-server" => {
+            return Ok(discovery::oauth_authorization_server(&issuer));
+        }
         "/.well-known/jwks.json" => return Ok(discovery::jwks().await),
         "/version" => return Ok(version_response()),
         "/healthz" => return Ok(healthz()),
@@ -424,6 +428,9 @@ async fn handle(
         (&Method::GET, "/.well-known/openid-configuration") => {
             Ok(discovery::openid_configuration(&issuer))
         }
+        (&Method::GET, "/.well-known/oauth-authorization-server") => {
+            Ok(discovery::oauth_authorization_server(&issuer))
+        }
         (&Method::GET, "/.well-known/jwks.json") => Ok(discovery::jwks().await),
         (&Method::GET, "/version") => Ok(version_response()),
 
@@ -435,7 +442,15 @@ async fn handle(
             if let Some((_, session_id)) = params.iter().find(|(k, _)| k == "session_id") {
                 Ok(login::login_page(session_id, None).await)
             } else {
-                let return_to = params.iter().find(|(k, _)| k == "return_to").map(|(_, v)| v.as_str()).unwrap_or("/admin");
+                let return_to_raw = params.iter().find(|(k, _)| k == "return_to").map(|(_, v)| v.as_str()).unwrap_or("/admin");
+                let return_to = if return_to_raw.starts_with('/')
+                    && !return_to_raw.starts_with("//")
+                    && !return_to_raw.starts_with("/\\")
+                {
+                    return_to_raw
+                } else {
+                    "/admin"
+                };
                 Ok(Response::builder()
                     .status(StatusCode::SEE_OTHER)
                     .header(
@@ -616,6 +631,32 @@ async fn handle(
             let body_bytes = read_body(body).await?;
             management::update_settings(auth, &body_bytes).await
         }
+
+        // ── Dynamic Client Registration (RFC 7591 / RFC 7592) ──
+        (&Method::POST, "/connect/register") | (&Method::POST, "/oauth/register") => {
+            let body_bytes = read_body(body).await?;
+            registration::register_client(auth, &body_bytes, &issuer).await
+        }
+        (&Method::GET, p)
+            if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
+        {
+            let id = p.rsplit('/').next().unwrap_or("");
+            registration::read_client(auth, id, &issuer).await
+        }
+        (&Method::PUT, p)
+            if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
+        {
+            let id = p.rsplit('/').next().unwrap_or("");
+            let body_bytes = read_body(body).await?;
+            registration::update_client(auth, id, &body_bytes, &issuer).await
+        }
+        (&Method::DELETE, p)
+            if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
+        {
+            let id = p.rsplit('/').next().unwrap_or("");
+            registration::delete_client(auth, id).await
+        }
+
         // ── CORS preflight ──────────────────────────────────
         (&Method::OPTIONS, _) => Ok(cors_preflight_base()),
 
@@ -833,7 +874,9 @@ async fn route_api(
             management::delete_identity_provider(auth, id).await
         }
         // ── Clients (dynamic) ───────────────────────────────
+        (&Method::GET, ["api", "clients", id]) => management::get_client(auth, id).await,
         (&Method::PUT, ["api", "clients", id]) => management::update_client(auth, id, body).await,
+        (&Method::DELETE, ["api", "clients", id]) => management::delete_client(auth, id).await,
         // ── Hooks ──────────────────────────────────────────────
         (&Method::GET, ["api", "hooks"]) => management::list_hooks(auth).await,
         // POST /api/hooks
@@ -1195,14 +1238,14 @@ async fn handle_logout(
     }
 
     // Redirect to post_logout_redirect_uri if provided, otherwise show confirmation.
-    // RP-Initiated Logout 1.0: the URI must be registered with the client identified
-    // by id_token_hint or client_id. If missing or unregistered, reject the redirect.
+    // RP-Initiated Logout 1.0: the URI must be registered in post_logout_redirect_uris
+    // with the client identified by id_token_hint or client_id. If missing or unregistered, reject the redirect.
     let uri_allowed = async |uri: &str| -> bool {
         let Some(cid) = hinted_client_id.as_deref().or(client_id_param) else {
             return false;
         };
         match store::get_client(cid).await {
-            Ok(Some(c)) => c.redirect_uris.iter().any(|ru| ru == uri),
+            Ok(Some(c)) => c.post_logout_redirect_uris.iter().any(|ru| ru == uri),
             _ => false,
         }
     };
@@ -1458,17 +1501,19 @@ async fn with_cors_and_security(
     let (mut parts, body) = resp.into_parts();
     let public_path = matches!(
         path,
-        "/.well-known/openid-configuration" | "/.well-known/jwks.json" | "/version" | "/health"
+        "/.well-known/openid-configuration"
+            | "/.well-known/oauth-authorization-server"
+            | "/.well-known/jwks.json"
+            | "/version"
+            | "/health"
+            | "/healthz"
     );
 
     if public_path {
         parts
             .headers
             .insert("access-control-allow-origin", "*".parse().unwrap());
-    } else {
-        let origin_value = allowed_origin(req_origin)
-            .await
-            .unwrap_or_else(|| "null".to_string());
+    } else if let Some(origin_value) = allowed_origin(req_origin).await {
         parts
             .headers
             .insert("access-control-allow-origin", origin_value.parse().unwrap());
@@ -1478,7 +1523,7 @@ async fn with_cors_and_security(
     }
     parts.headers.insert(
         "access-control-allow-methods",
-        "GET, POST, DELETE, OPTIONS".parse().unwrap(),
+        "GET, POST, PUT, DELETE, OPTIONS".parse().unwrap(),
     );
     parts.headers.insert(
         "access-control-allow-headers",

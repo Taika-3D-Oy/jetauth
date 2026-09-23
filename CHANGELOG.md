@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-09-23
+
+### Added
+
+- **RFC 7591 Dynamic Client Registration & RFC 7592 Management**:
+  - Implemented `POST /connect/register` (and `/oauth/register`) supporting RFC 7591 metadata registration, client credentials generation (HMAC hashed), and RFC 7592 `registration_access_token` issuance (SHA-256 hashed).
+  - Added RFC 7592 Client Configuration Management (`GET`, `PUT`, `DELETE /connect/register/:id`) authenticated with registration access tokens.
+  - Added configurable gating via `client_registration_mode` ("disabled" by default, "open", or "protected" with Bearer Initial Access Token).
+- **RFC 8414 Authorization Server Metadata**:
+  - Added fast-path and main router support for `/.well-known/oauth-authorization-server`.
+- **REST Client Management**:
+  - Added programmatic `GET /api/clients/:id` and `DELETE /api/clients/:id` endpoints.
+
+### Changed
+
+- **RFC 9207 Issuer Identification in Authorization Responses**:
+  - Enforced `iss` parameter inclusion in all authorization code redirects across authorization, login, consent, and passkey flows.
+  - Advertised `"authorization_response_iss_parameter_supported": true` in discovery metadata.
+- **RP-Initiated Logout Separation**:
+  - Added dedicated `post_logout_redirect_uris` field on `OidcClient`.
+  - Enforced strict post-logout URI validation matching only against `post_logout_redirect_uris`.
+- **Discovery Alignment**:
+  - Removed misleading `/register` signup endpoint from discovery metadata.
+  - Conditionally advertise RFC 7591 `registration_endpoint` only when dynamic registration is enabled.
+
+### Security & Fixed
+
+- **RFC 7009 Token Revocation Hardening**:
+  - Required client authentication on token revocation requests.
+  - Verified refresh token ownership before revocation to prevent cross-client token probing.
+- **RFC 6750 §3.1 Bearer Challenges**:
+  - UserInfo endpoint returns `HTTP 401 Unauthorized` with `WWW-Authenticate: Bearer` challenge header on failed or missing tokens.
+- **RFC 7662 Introspection Challenge**:
+  - Corrected introspection challenge header to `Basic realm="token-introspection"`.
+- **TOTP Replay Mitigation**:
+  - Added time-step tracking (`record_totp_used`) to prevent TOTP replay within clock-skew windows.
+- **XSS & Injection Hardening**:
+  - Prevented DOM XSS in admin toast messages using `textContent`.
+  - Added HTML escaping to recipient names in email worker templates.
+  - Hardened custom CSS sanitization against `</style>` / `<script>` breakouts.
+- **Documentation**:
+  - Clarified RFC 9449 (DPoP) roadmap status in `SECURITY.md`.
+
 ## [1.10.0] - 2026-08-31
 
 ### Breaking Changes

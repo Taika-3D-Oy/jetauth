@@ -78,8 +78,8 @@ check_prereqs
 # ── Build & Push ─────────────────────────────────────────────
 
 build_and_push() {
-  log "Building lattice-id (release, wasm32-wasip3)"
-  cargo build --workspace --target wasm32-wasip3 --release
+  log "Building lattice-id (release, wasm32-wasip2)"
+  cargo build --workspace --target wasm32-wasip2 --release
 
   log "Pushing components to local OCI registry"
 
@@ -89,7 +89,7 @@ build_and_push() {
   for comp in "${components[@]}"; do
     local wasm="${comp//-/_}"
     wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/${comp}:dev" \
-      "target/wasm32-wasip3/release/${wasm}.wasm"
+      "target/wasm32-wasip2/release/${wasm}.wasm"
   done
 
   # lattice-db: mirror from GHCR into local registry so the in-cluster host
@@ -139,10 +139,15 @@ spec:
             - name: config
               mountPath: /etc/nats
               readOnly: true
+            - name: nats-storage
+              mountPath: /tmp/nats/jetstream
       volumes:
         - name: config
           configMap:
             name: nats-data-config
+        - name: nats-storage
+          emptyDir:
+            sizeLimit: 10Gi
 ---
 apiVersion: v1
 kind: Service

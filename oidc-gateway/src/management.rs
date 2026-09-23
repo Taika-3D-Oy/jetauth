@@ -548,6 +548,8 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
     struct Req {
         name: String,
         redirect_uris: Vec<String>,
+        #[serde(default)]
+        post_logout_redirect_uris: Option<Vec<String>>,
         grant_types: Option<Vec<String>>,
         #[serde(default)]
         confidential: bool,
@@ -578,6 +580,12 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
             return Err("redirect_uris must use http or https scheme".into());
         }
     }
+    let post_logout_uris = req.post_logout_redirect_uris.unwrap_or_default();
+    for uri in &post_logout_uris {
+        if !uri.starts_with("http://") && !uri.starts_with("https://") {
+            return Err("post_logout_redirect_uris must use http or https scheme".into());
+        }
+    }
 
     let client_secret = if req.confidential {
         let raw = store::random_hex(32);
@@ -594,6 +602,7 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
         client_secret: client_secret.as_ref().map(|(_, h)| h.clone()),
         name: req.name,
         redirect_uris: req.redirect_uris,
+        post_logout_redirect_uris: post_logout_uris,
         grant_types: req.grant_types.unwrap_or_else(|| {
             vec![
                 "authorization_code".to_string(),
@@ -634,6 +643,7 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
         "client_id": client.client_id,
         "name": client.name,
         "redirect_uris": client.redirect_uris,
+        "post_logout_redirect_uris": client.post_logout_redirect_uris,
         "grant_types": client.grant_types,
         "theme": client.theme,
         "first_party": client.first_party,
@@ -644,6 +654,39 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
     }
 
     json_response(StatusCode::CREATED, &resp)
+}
+
+/// GET /api/clients/:id
+pub async fn get_client(auth: Option<&str>, id: &str) -> Result<Response<String>, String> {
+    let claims = require_auth(auth).await?;
+    require_superadmin(&claims)?;
+
+    let client = store::get_client(id).await?.ok_or("client not found")?;
+    let mut v = serde_json::to_value(&client).map_err(|e| e.to_string())?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("client_secret");
+    }
+    json_ok(&v)
+}
+
+/// DELETE /api/clients/:id
+pub async fn delete_client(auth: Option<&str>, id: &str) -> Result<Response<String>, String> {
+    let claims = require_auth(auth).await?;
+    require_superadmin(&claims)?;
+
+    if id == "lid-admin" {
+        return Err("cannot delete system admin client".into());
+    }
+
+    let _ = store::get_client(id).await?.ok_or("client not found")?;
+    store::delete_client(id).await?;
+
+    crate::service_client::replicate_to_regions("delete", "client", id, None).await;
+
+    let sub = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("");
+    let _ = store::log_audit("client_deleted", sub, id, "").await;
+
+    json_ok(&serde_json::json!({ "deleted": true, "client_id": id }))
 }
 
 /// PUT /api/clients/:id
@@ -660,6 +703,7 @@ pub async fn update_client(
     #[derive(serde::Deserialize)]
     struct Req {
         redirect_uris: Option<Vec<String>>,
+        post_logout_redirect_uris: Option<Vec<String>>,
         name: Option<String>,
         grant_types: Option<Vec<String>>,
         theme: Option<Option<store::ClientTheme>>,
@@ -681,6 +725,14 @@ pub async fn update_client(
             }
         }
         client.redirect_uris = uris;
+    }
+    if let Some(uris) = req.post_logout_redirect_uris {
+        for uri in &uris {
+            if !uri.starts_with("http://") && !uri.starts_with("https://") {
+                return Err("post_logout_redirect_uris must use http or https scheme".into());
+            }
+        }
+        client.post_logout_redirect_uris = uris;
     }
     if let Some(name) = req.name {
         if name.is_empty() {
@@ -726,6 +778,7 @@ pub async fn update_client(
         "client_id": client.client_id,
         "name": client.name,
         "redirect_uris": client.redirect_uris,
+        "post_logout_redirect_uris": client.post_logout_redirect_uris,
         "grant_types": client.grant_types,
         "theme": client.theme,
         "first_party": client.first_party,
@@ -1848,10 +1901,13 @@ pub async fn passkey_auth_complete(
     store::save_auth_code(&code, &auth_code).await?;
     let _ = store::delete_auth_session(&req.session_id).await;
 
-    let mut redirect_url = format!("{}?code={code}", session.redirect_uri);
-    if !session.state.is_empty() {
-        redirect_url.push_str(&format!("&state={}", session.state));
-    }
+    let issuer = crate::get_issuer();
+    let redirect_url = crate::util::build_auth_code_redirect(
+        &session.redirect_uri,
+        &code,
+        &session.state,
+        &issuer,
+    );
 
     // Return JSON with redirect URL (JS-initiated, can't use HTTP 302)
     // Also set account session cookie for /account access

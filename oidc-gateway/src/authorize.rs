@@ -248,7 +248,11 @@ pub async fn handle(
     // Validate redirect_uri
     let is_valid_redirect = client.redirect_uris.iter().any(|u| {
         u == redirect_uri
-            || (client.first_party && (u == &format!("{issuer}{redirect_uri}") || redirect_uri.starts_with('/')))
+            || (client.first_party
+                && (u == &format!("{issuer}{redirect_uri}")
+                    || (redirect_uri.starts_with('/')
+                        && !redirect_uri.starts_with("//")
+                        && !redirect_uri.starts_with("/\\"))))
     });
     if !is_valid_redirect {
         return Err("redirect_uri not registered for this client".into());
@@ -347,10 +351,8 @@ pub async fn handle(
                         return Ok(Response::from_parts(parts, body));
                     }
 
-                    let mut redirect_url = format!("{}?code={code}", redirect_uri);
-                    if !state.is_empty() {
-                        redirect_url.push_str(&format!("&state={}", state));
-                    }
+                    let redirect_url =
+                        util::build_auth_code_redirect(redirect_uri, &code, state, issuer);
                     let mut builder = Response::builder()
                         .status(StatusCode::FOUND)
                         .header("location", &redirect_url)

@@ -48,7 +48,8 @@ pub async fn check_rate(key: &str, limit: u64, window_secs: u64) -> Result<(bool
                 Err(e) => return Err(format!("rate limit create: {e}")),
             }
         } else {
-            match crate::store::kv_cas_raw(&table, &db_key, new_count.as_bytes(), revision).await {
+            let window_ttl = window_secs + 10;
+            match crate::store::kv_cas_raw(&table, &db_key, new_count.as_bytes(), revision, Some(window_ttl)).await {
                 Ok(()) => return Ok((true, limit - count - 1)),
                 Err(e) if e.contains("revision mismatch") => continue,
                 Err(e) => return Err(format!("rate limit cas: {e}")),

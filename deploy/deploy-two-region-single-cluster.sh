@@ -46,15 +46,15 @@ fi
 
 build_and_push() {
   log "Building workspace (release)"
-  cargo build --workspace --target wasm32-wasip3 --release
+  cargo build --workspace --target wasm32-wasip2 --release
 
   log "Pushing components to local registry"
   wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/oidc-gateway:dev" \
-    target/wasm32-wasip3/release/oidc_gateway.wasm
+    target/wasm32-wasip2/release/oidc_gateway.wasm
   wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/password-hasher:dev" \
-    target/wasm32-wasip3/release/password_hasher.wasm
+    target/wasm32-wasip2/release/password_hasher.wasm
   wash oci push --insecure "localhost:${REGISTRY_PORT}/lattice-id/email-worker:dev" \
-    target/wasm32-wasip3/release/email_worker.wasm
+    target/wasm32-wasip2/release/email_worker.wasm
 }
 
 if [[ "${1:-}" == "rebuild" ]]; then
@@ -191,7 +191,7 @@ create_buckets() {
   local ns="$1"
 
   log "Creating KV buckets in $ns"
-  local overrides='{"spec":{"volumes":[{"name":"tls","secret":{"secretName":"wasmcloud-data-tls"}}],"containers":[{"name":"nats-setup","image":"natsio/nats-box:latest","stdin":true,"tty":false,"volumeMounts":[{"name":"tls","mountPath":"/tls","readOnly":true}],"command":["sh","-c","NATS=\"nats --server nats://nats:4222 --tlscert /tls/tls.crt --tlskey /tls/tls.key --tlsca /tls/ca.crt\"; for b in lid-users lid-user-idx lid-sessions lid-clients lid-tenants lid-memberships lid-audit lid-keys lid-abuse-rate-limits; do $NATS kv add $b 2>&1 || true; done"]}]}}'
+  local overrides='{"spec":{"volumes":[{"name":"tls","secret":{"secretName":"wasmcloud-data-tls"}}],"containers":[{"name":"nats-setup","image":"natsio/nats-box:latest","stdin":true,"tty":false,"volumeMounts":[{"name":"tls","mountPath":"/tls","readOnly":true}],"command":["sh","-c","NATS=\"nats --server nats://nats:4222 --tlscert /tls/tls.crt --tlskey /tls/tls.key --tlsca /tls/ca.crt\"; for b in lid-users lid-user-idx lid-sessions lid-clients lid-tenants lid-memberships lid-keys; do $NATS kv add $b 2>&1 || true; done; $NATS kv add lid-audit --ttl 30d --history 1 2>&1 || true; $NATS kv add lid-abuse-rate-limits --ttl 1h --history 1 2>&1 || true;"]}]}}'
   kubectl run "nats-setup-${ns}" --rm -i --restart=Never -n "$ns" \
     --image=natsio/nats-box:latest \
     --overrides="$overrides" 2>&1 || true
