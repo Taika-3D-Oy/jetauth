@@ -1924,6 +1924,7 @@ pub async fn passkey_auth_complete(
         csrf_token: store::random_hex(16),
         expires_at: store::unix_now() + 300,
         state: session.state.clone(),
+        sid: session.sid.clone(),
     };
     store::save_auth_code(&code, &auth_code).await?;
     let _ = store::delete_auth_session(&req.session_id).await;

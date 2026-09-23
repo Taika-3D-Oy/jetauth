@@ -8,10 +8,15 @@ fn token_error(status: StatusCode, error: &str, description: &str) -> Response<S
         "error": error,
         "error_description": description,
     });
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache");
+    if status == StatusCode::UNAUTHORIZED {
+        builder = builder.header("www-authenticate", "Basic realm=\"lattice-id\"");
+    }
+    builder
         .body(serde_json::to_string(&body).unwrap_or_default())
         .unwrap()
 }
@@ -216,6 +221,7 @@ async fn handle_code_exchange(
         &auth_code.requested_userinfo_claims,
         &auth_code.extra_claims,
         dpop_jkt,
+        auth_code.sid.as_deref(),
     )
     .await;
 
@@ -243,6 +249,7 @@ async fn handle_code_exchange(
         requested_id_token_claims: auth_code.requested_id_token_claims.clone(),
         requested_userinfo_claims: auth_code.requested_userinfo_claims.clone(),
         issued_at: now,
+        sid: auth_code.sid.clone(),
     };
     store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
 
@@ -285,6 +292,7 @@ async fn handle_code_exchange(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
 }
@@ -318,7 +326,7 @@ async fn handle_refresh(
             if let Ok(Some(user_id)) = store::get_consumed_refresh(&refresh_hash).await {
                 let issuer = store::config_value("issuer_url")
                     .unwrap_or_else(|| "http://localhost".to_string());
-                crate::backchannel::notify_all_clients(&user_id, &issuer).await;
+                crate::backchannel::notify_all_clients(&user_id, &issuer, None).await;
                 let _ = store::revoke_user_sessions(&user_id).await;
                 let _ = store::delete_user_refresh_tokens(&user_id).await;
                 let _ = crate::service_client::increment_metric(
@@ -394,6 +402,7 @@ async fn handle_refresh(
         &entry.requested_userinfo_claims,
         &[],
         dpop_jkt,
+        entry.sid.as_deref(),
     )
     .await;
 
@@ -421,6 +430,7 @@ async fn handle_refresh(
         requested_userinfo_claims: entry.requested_userinfo_claims.clone(),
         // Carry original issuance timestamp forward through the family
         issued_at: family_issued_at,
+        sid: entry.sid.clone(),
     };
     store::save_refresh_token(&new_refresh_hash, &new_entry).await?;
 
@@ -455,6 +465,7 @@ async fn handle_refresh(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
 }
@@ -526,6 +537,7 @@ async fn handle_client_credentials(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
 }
@@ -627,6 +639,7 @@ async fn handle_device_code(
                 &[],
                 &[],
                 dpop_jkt,
+                dc.sid.as_deref(),
             )
             .await;
 
@@ -651,6 +664,7 @@ async fn handle_device_code(
                 requested_id_token_claims: vec![],
                 requested_userinfo_claims: vec![],
                 issued_at: now,
+                sid: dc.sid.clone(),
             };
             store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
 
@@ -680,6 +694,7 @@ async fn handle_device_code(
                 .status(StatusCode::OK)
                 .header("content-type", "application/json")
                 .header("cache-control", "no-store")
+                .header("pragma", "no-cache")
                 .body(serde_json::to_string(&response).unwrap_or_default())
                 .unwrap())
         }
@@ -789,6 +804,7 @@ pub async fn handle_introspect(
                 .status(StatusCode::UNAUTHORIZED)
                 .header("content-type", "application/json")
                 .header("cache-control", "no-store")
+                .header("pragma", "no-cache")
                 .header("www-authenticate", "Basic realm=\"token-introspection\"")
                 .body(r#"{"error":"invalid_client"}"#.to_string())
                 .unwrap());
@@ -801,6 +817,7 @@ pub async fn handle_introspect(
             .status(StatusCode::UNAUTHORIZED)
             .header("content-type", "application/json")
             .header("cache-control", "no-store")
+            .header("pragma", "no-cache")
             .header("www-authenticate", "Basic realm=\"token-introspection\"")
             .body(
                 r#"{"error":"invalid_client","error_description":"client must be confidential"}"#
@@ -832,6 +849,7 @@ pub async fn handle_introspect(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
 }
@@ -892,6 +910,7 @@ fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<Stri
         .status(status)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
+        .header("pragma", "no-cache")
         .body(serde_json::to_string(value).unwrap_or_default())
         .unwrap()
 }
@@ -944,9 +963,16 @@ async fn build_claims(
     requested_userinfo_claims: &[String],
     extra_claims: &[(String, String)],
     dpop_jkt: Option<&str>,
+    sid: Option<&str>,
 ) -> (serde_json::Value, serde_json::Value) {
     let now = store::unix_now();
     let memberships = store::list_user_tenants(&user.id).await.unwrap_or_default();
+
+    let scopes: Vec<&str> = scope.split_whitespace().collect();
+    let has_email_scope =
+        scopes.contains(&"email") || requested_id_token_claims.iter().any(|c| c == "email");
+    let has_profile_scope =
+        scopes.contains(&"profile") || requested_id_token_claims.iter().any(|c| c == "name");
 
     let email_verified = user.status == "active";
     let mut access_claims = serde_json::json!({
@@ -956,13 +982,17 @@ async fn build_claims(
         "exp": now + 3600,
         "nbf": now - 30,
         "iat": now,
-        "email": user.email,
-        "email_verified": email_verified,
-        "name": user.name,
         "scope": scope,
         "auth_time": auth_time,
         "token_type": "access",
     });
+    if has_email_scope {
+        access_claims["email"] = serde_json::json!(user.email);
+        access_claims["email_verified"] = serde_json::json!(email_verified);
+    }
+    if has_profile_scope {
+        access_claims["name"] = serde_json::json!(user.name);
+    }
     if let Some(jkt) = dpop_jkt {
         access_claims["cnf"] = serde_json::json!({ "jkt": jkt });
     }
@@ -974,10 +1004,17 @@ async fn build_claims(
         "nbf": now - 30,
         "iat": now,
         "auth_time": auth_time,
-        "email": user.email,
-        "email_verified": email_verified,
-        "name": user.name,
     });
+    if has_email_scope {
+        id_claims["email"] = serde_json::json!(user.email);
+        id_claims["email_verified"] = serde_json::json!(email_verified);
+    }
+    if has_profile_scope {
+        id_claims["name"] = serde_json::json!(user.name);
+    }
+    if let Some(session_id) = sid {
+        id_claims["sid"] = serde_json::json!(session_id);
+    }
 
     if let Some(value) = nonce
         && !value.is_empty()
@@ -1275,6 +1312,87 @@ mod tests {
             assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
             let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
             assert_eq!(val["error"], "invalid_dpop_proof");
+        });
+    }
+
+    #[test]
+    fn test_build_claims_scope_gating() {
+        futures::executor::block_on(async {
+            let user = crate::store::User {
+                id: "user-123".into(),
+                email: "alice@example.com".into(),
+                name: "Alice Smith".into(),
+                password_hash: "hash".into(),
+                status: "active".into(),
+                created_at: 1000,
+                superadmin: false,
+                totp_secret: None,
+                totp_enabled: false,
+                recovery_codes: vec![],
+                passkey_credentials: vec![],
+            };
+
+            // Case 1: scope = "openid" only (no email, no profile)
+            let (access_claims, id_claims) = super::build_claims(
+                "https://auth.example.com",
+                &user,
+                "test-client",
+                Some("test-nonce"),
+                1000,
+                &[],
+                None,
+                "openid",
+                &[],
+                &[],
+                &[],
+                None,
+                Some("test-session-id"),
+            )
+            .await;
+
+            assert_eq!(id_claims["sub"], "user-123");
+            assert_eq!(id_claims["sid"], "test-session-id");
+            assert!(
+                id_claims.get("email").is_none(),
+                "email must not be in id_token without email scope"
+            );
+            assert!(
+                id_claims.get("name").is_none(),
+                "name must not be in id_token without profile scope"
+            );
+            assert!(
+                access_claims.get("email").is_none(),
+                "email must not be in access_token without email scope"
+            );
+            assert!(
+                access_claims.get("name").is_none(),
+                "name must not be in access_token without profile scope"
+            );
+
+            // Case 2: scope = "openid email profile"
+            let (access_claims2, id_claims2) = super::build_claims(
+                "https://auth.example.com",
+                &user,
+                "test-client",
+                Some("test-nonce"),
+                1000,
+                &[],
+                None,
+                "openid email profile",
+                &[],
+                &[],
+                &[],
+                None,
+                Some("test-session-id"),
+            )
+            .await;
+
+            assert_eq!(id_claims2["email"], "alice@example.com");
+            assert_eq!(id_claims2["email_verified"], true);
+            assert_eq!(id_claims2["name"], "Alice Smith");
+            assert_eq!(id_claims2["sid"], "test-session-id");
+            assert_eq!(access_claims2["email"], "alice@example.com");
+            assert_eq!(access_claims2["name"], "Alice Smith");
         });
     }
 }

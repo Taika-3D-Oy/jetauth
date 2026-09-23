@@ -54,6 +54,7 @@ pub async fn start(body_bytes: &[u8], issuer: &str) -> Result<Response<String>, 
         expires_at: store::unix_now() + expires_in,
         status: "pending".to_string(),
         user_id: None,
+        sid: None,
     };
     store::save_device_code(&dc).await?;
 
@@ -215,6 +216,7 @@ pub async fn submit(body_bytes: &[u8], issuer: &str) -> Result<Response<String>,
         created_at: store::unix_now(),
         needs_consent: false,
         prompt: None,
+        sid: Some(store::random_hex(16)),
     };
     store::save_auth_session(&session_id, &session).await?;
 

@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::{jwt, keys, store};
+use crate::{jwt, store};
 
 /// Hash a password locally via imported hasher (stateless scaling).
 pub async fn hash_password(plain: &str) -> Result<String, String> {
@@ -20,9 +20,8 @@ pub async fn verify_token_scoped(
     expected_audience: Option<&str>,
     required_token_type: Option<&str>,
 ) -> Result<Value, String> {
-    let key_store = keys::KeyStore::load().await?;
-    let verifiers = key_store.all_verifiers();
-    let claims = jwt::verify(token, &verifiers)?;
+    let jwks = get_jwks().await?;
+    let (_header, claims) = jwt::verify_jwt_with_jwks(token, &jwks)?;
 
     // Validate iat and nbf
     let now = store::unix_now();
@@ -99,7 +98,7 @@ pub async fn increment_metric(name: &str, labels: &[(&str, &str)]) -> Result<(),
         .iter()
         .map(|(k, v)| ((*k).to_string(), json!(*v)))
         .collect();
-    let payload = json!({
+    let _payload = json!({
         "op": "metric_increment",
         "name": name,
         "labels": label_map,

@@ -722,8 +722,13 @@ pub async fn complete_login_with_amr(
     // issuing an authorization code.
     if session.code_challenge_method == "device" {
         let device_code = &session.state;
-        if let Err(e) =
-            crate::store::update_device_code_status(device_code, "approved", Some(&user.id)).await
+        if let Err(e) = crate::store::update_device_code_status(
+            device_code,
+            "approved",
+            Some(&user.id),
+            session.sid.as_deref(),
+        )
+        .await
         {
             crate::logger::error_message("device.approve_failed", e);
             return Ok(login_page(
@@ -771,6 +776,7 @@ pub async fn complete_login_with_amr(
         csrf_token: crate::store::random_hex(16),
         expires_at: crate::store::unix_now() + 300,
         state: session.state.clone(),
+        sid: session.sid.clone(),
     };
 
     // ── Consent screen ──────────────────────────────────────
@@ -884,6 +890,7 @@ mod tests {
             created_at: 0,
             needs_consent: false,
             prompt: None,
+            sid: None,
         };
         let amr = vec!["pwd".to_string(), "mfa".to_string(), "otp".to_string()];
         assert_eq!(
@@ -911,6 +918,7 @@ mod tests {
             created_at: 0,
             needs_consent: false,
             prompt: None,
+            sid: None,
         };
         let amr = vec!["pwd".to_string()];
         assert_eq!(select_acr(&session, &amr), None);
@@ -1082,9 +1090,12 @@ pub async fn handle_consent(body_bytes: &[u8]) -> Result<Response<String>, Strin
         } else {
             '?'
         };
+        let issuer = crate::get_issuer();
         let mut loc = format!(
-            "{}{}error=access_denied&error_description=user+denied+consent",
-            auth_code.redirect_uri, sep
+            "{}{}error=access_denied&error_description=user+denied+consent&iss={}",
+            auth_code.redirect_uri,
+            sep,
+            crate::util::percent_encode(&issuer)
         );
         if !auth_code.state.is_empty() {
             loc.push_str(&format!(

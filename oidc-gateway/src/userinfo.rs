@@ -171,22 +171,54 @@ pub fn extract_bearer(
 
 /// Handle GET/POST /userinfo — validate Bearer or DPoP token, return user claims.
 /// Per OIDC Core §5.3.3: The access token MUST be validated (issuer, audience, type).
-/// Per RFC 6750 §3.1 / RFC 9449 §7: Failed authentication MUST return 401 with WWW-Authenticate header.
+/// Per RFC 6750 §2.2 / §3.1 / RFC 9449 §7: Failed authentication MUST return 401 with WWW-Authenticate header.
+/// Supports both Authorization header and form-encoded body parameter for POST requests.
 pub async fn handle(
     auth_header: Option<&str>,
     dpop_header: Option<&str>,
     issuer: &str,
     method: &str,
+    body: &[u8],
 ) -> Result<Response<String>, String> {
-    let (token, scheme) = match extract_token(auth_header) {
-        Ok(t) => t,
-        Err((status, code, desc)) => {
-            return Ok(unauthorized_response(
-                "Bearer",
-                status,
-                code.map(|c| (c, desc)),
-            ));
+    let form_token = if method == "POST" && !body.is_empty() {
+        let form = crate::util::parse_form(body);
+        form.into_iter()
+            .find(|(k, _)| k == "access_token")
+            .map(|(_, v)| v)
+    } else {
+        None
+    };
+
+    if auth_header.is_some() && form_token.is_some() {
+        return Ok(unauthorized_response(
+            "Bearer",
+            StatusCode::BAD_REQUEST,
+            Some((
+                "invalid_request",
+                "multiple token transmission methods used: both header and body provided",
+            )),
+        ));
+    }
+
+    let (token, scheme) = if let Some(header) = auth_header {
+        match extract_token(Some(header)) {
+            Ok(t) => t,
+            Err((status, code, desc)) => {
+                return Ok(unauthorized_response(
+                    "Bearer",
+                    status,
+                    code.map(|c| (c, desc)),
+                ));
+            }
         }
+    } else if let Some(t) = form_token {
+        (t, AuthScheme::Bearer)
+    } else {
+        return Ok(unauthorized_response(
+            "Bearer",
+            StatusCode::UNAUTHORIZED,
+            None,
+        ));
     };
 
     // Verify JWT and extract claims.
@@ -387,5 +419,32 @@ mod tests {
             dpop_resp.headers().get("www-authenticate").unwrap(),
             "DPoP error=\"invalid_dpop_proof\", error_description=\"proof expired\""
         );
+    }
+
+    #[test]
+    fn test_userinfo_multiple_token_methods_rejected() {
+        futures::executor::block_on(async {
+            let res = handle(
+                Some("Bearer token123"),
+                None,
+                "https://auth.example.com",
+                "POST",
+                b"access_token=token456",
+            )
+            .await
+            .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            assert!(res.body().contains("multiple token transmission methods"));
+        });
+    }
+
+    #[test]
+    fn test_userinfo_missing_token_returns_401() {
+        futures::executor::block_on(async {
+            let res = handle(None, None, "https://auth.example.com", "GET", b"")
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        });
     }
 }

@@ -341,6 +341,9 @@ pub struct AuthSession {
     /// The prompt parameter from authorize request (e.g., "consent", "login", "none").
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Session ID for Back-Channel Logout & OIDC session management.
+    #[serde(default)]
+    pub sid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -383,6 +386,9 @@ pub struct AuthCode {
     /// OAuth2 state param, carried through consent flow.
     #[serde(default)]
     pub state: String,
+    /// Session ID for Back-Channel Logout & OIDC session management.
+    #[serde(default)]
+    pub sid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -408,6 +414,8 @@ pub struct RefreshEntry {
     /// Carried forward on every rotation to enforce an absolute lifetime cap.
     #[serde(default)]
     pub issued_at: u64,
+    #[serde(default)]
+    pub sid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -596,6 +604,8 @@ pub struct DeviceCode {
     pub status: String,
     /// Set when status = "approved".
     pub user_id: Option<String>,
+    #[serde(default)]
+    pub sid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2857,10 +2867,14 @@ pub async fn update_device_code_status(
     device_code: &str,
     status: &str,
     user_id: Option<&str>,
+    sid: Option<&str>,
 ) -> Result<(), String> {
     if let Some(mut dc) = get_device_code(device_code).await? {
         dc.status = status.to_string();
         dc.user_id = user_id.map(String::from);
+        if sid.is_some() {
+            dc.sid = sid.map(String::from);
+        }
         let remaining_ttl = dc.expires_at.saturating_sub(unix_now());
         kv_set_ttl(
             &sessions_store(),

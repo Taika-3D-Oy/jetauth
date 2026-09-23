@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-23
+
+### Security & Compliance
+
+- **OIDC Core 1.0 & RFC 6749 Scope-Gated PII Claims (§5.4)**:
+  - Gated `email` and `email_verified` claims on explicit `email` scope / claim request; gated `name` and derived profile claims on explicit `profile` scope / claim request. Access and ID tokens no longer leak user PII by default when requested scopes omit `email` and `profile`.
+- **Open Redirect Prevention & Early Authorization Validation (RFC 6749 §3.1.2.4)**:
+  - Validated client registration and pre-registered `redirect_uri` prior to processing `prompt=none` or performing any redirects. Unregistered clients or mismatched redirect URIs immediately halt with an HTTP 400 Bad Request error.
+- **RFC 9449 DPoP Cross-Origin Proof Reuse Prevention (§4.3)**:
+  - Enforced strict scheme, host, and port matching on DPoP proof `htu` URIs in `dpop.rs`, removing lenient path-fallback matching that previously allowed cross-origin proof reuse.
+- **RFC 9126 PAR Precedence & Parameter Tampering Prevention (§4)**:
+  - Enforced strict query parameter restrictions when `request_uri` is present on `/authorize`: only `client_id` and `request_uri` are permitted, rejecting any external parameter overrides or tampering.
+- **Session ID (`sid`) Tracking & RFC 8613 Back-Channel Logout**:
+  - Propagated session identifier `sid` across `AuthSession`, `AuthCode`, `RefreshEntry`, and `DeviceCode`.
+  - Emitted `sid` claim in `id_token` and included `sid` in signed `logout_token` JWTs during Back-Channel Logout notifications.
+- **RFC 9207 Authorization Response Metadata (`iss`) & Cache-Control**:
+  - Added `&iss={issuer}` and `Cache-Control: no-store` to all authorization error redirects and consent denial redirects.
+- **RFC 6750 §2.2 Form-Encoded Bearer Token on `POST /userinfo`**:
+  - Supported `application/x-www-form-urlencoded` body parameter `access_token` on `POST /userinfo` when the `Authorization` header is omitted; enforced single transmission method rejection (HTTP 400 `invalid_request` if both header and body tokens are provided).
+- **RFC 6749 §5.1 / RFC 7662 Caching & Authentication Headers**:
+  - Added `Pragma: no-cache` to successful and error responses across `/token` and `/token/introspect`.
+  - Added `WWW-Authenticate: Basic realm="lattice-id"` to HTTP 401 client authentication failures on the token endpoint.
+- **Client Authentication Method Enforcement (RFC 7591 / RFC 6749 §2.3)**:
+  - Enforced that incoming token and introspection endpoint requests use the client's registered `token_endpoint_auth_method`.
+- **ES256 & RS256 JWKS Token Verification in Service Client**:
+  - Updated `service_client::verify_token_scoped` to dynamically verify tokens against the server JWKS, supporting both ES256 and RS256 signatures.
+
 ## [1.12.0] - 2026-09-23
 
 ### Added

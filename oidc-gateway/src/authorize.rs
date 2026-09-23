@@ -87,12 +87,14 @@ fn authorize_error_redirect(
     state: &str,
     error: &str,
     description: &str,
+    issuer: &str,
 ) -> Response<String> {
     let separator = if redirect_uri.contains('?') { '&' } else { '?' };
     let mut location = format!(
-        "{redirect_uri}{separator}error={}&error_description={}",
+        "{redirect_uri}{separator}error={}&error_description={}&iss={}",
         util::percent_encode(error),
         util::percent_encode(description),
+        util::percent_encode(issuer),
     );
     if !state.is_empty() {
         location.push_str("&state=");
@@ -102,6 +104,7 @@ fn authorize_error_redirect(
     Response::builder()
         .status(StatusCode::FOUND)
         .header("location", location)
+        .header("cache-control", "no-store")
         .body(String::new())
         .unwrap()
 }
@@ -179,11 +182,17 @@ pub async fn handle(
             }
         }
 
-        for (k, v) in par_entry.parameters {
-            if !params.iter().any(|(pk, _)| pk == &k) {
-                params.push((k, v));
+        // RFC 9126 §4: client MUST NOT send parameters other than client_id and request_uri
+        for (k, _) in &query_params {
+            if k != "client_id" && k != "request_uri" {
+                return Err(
+                    "authorization request with request_uri MUST NOT contain other parameters"
+                        .into(),
+                );
             }
         }
+
+        params = par_entry.parameters.into_iter().collect();
         used_par = true;
     }
 
@@ -194,75 +203,10 @@ pub async fn handle(
             .map(|(_, v)| v.as_str())
     };
 
-    // Required OIDC params
-    let response_type = get("response_type").ok_or("missing response_type")?;
-    if response_type != "code" {
-        return Err(format!("unsupported response_type: {response_type}"));
-    }
-
+    // Client and redirect_uri validation MUST precede ANY redirection
     let client_id = get("client_id").ok_or("missing client_id")?;
     let redirect_uri = get("redirect_uri").ok_or("missing redirect_uri")?;
-    let code_challenge = get("code_challenge");
-    let code_challenge_method = get("code_challenge_method").unwrap_or("S256");
-    if code_challenge.is_some() && code_challenge_method != "S256" {
-        return Err("only S256 code_challenge_method is supported".into());
-    }
-
-    let prompt = get("prompt").unwrap_or("");
     let state = get("state").unwrap_or("");
-    let id_token_hint = get("id_token_hint");
-    let login_hint = get("login_hint");
-    let max_age = match get("max_age") {
-        Some(value) => Some(
-            value
-                .parse::<u64>()
-                .map_err(|_| "invalid max_age (must be a non-negative integer)")?,
-        ),
-        None => None,
-    };
-
-    // ── IdP browser session: enables SSO and prompt=none ────────────
-    // Look up the lid_session cookie. Skip when prompt=login (force re-auth).
-    let idp_session = if prompt != "login" {
-        crate::account::get_idp_session_from_headers(headers).await
-    } else {
-        None
-    };
-    // Honour max_age: discard the session if the original auth is too old.
-    let idp_session = idp_session.filter(|s| {
-        max_age.map_or(true, |age| {
-            store::unix_now().saturating_sub(s.auth_time) <= age
-        })
-    });
-
-    // Task 2.16: Support OIDC prompt parameter (OIDC Core §3.1.2.1).
-    if prompt == "none" && idp_session.is_none() {
-        // No valid browser session — cannot satisfy prompt=none.
-        let err_redirect = format!(
-            "{}{}error=login_required&error_description=prompt%3Dnone%20requires%20existing%20session&state={}",
-            redirect_uri,
-            if redirect_uri.contains('?') { "&" } else { "?" },
-            state
-        );
-        return Ok(Response::builder()
-            .status(http::StatusCode::FOUND)
-            .header("location", &err_redirect)
-            .body(String::new())
-            .unwrap());
-    }
-    // prompt=login: Force re-authentication (idp_session already cleared above).
-    // prompt=consent: Always implied (no stored consent).
-
-    let scope = get("scope").unwrap_or("openid");
-    let nonce = get("nonce").unwrap_or("");
-    let mut acr_values = parse_acr_values(get("acr_values"));
-    let claims_request = parse_claims_param(get("claims"))?;
-    if !acr_values.is_empty() && !claims_request.acr_values.is_empty() {
-        return Err("claims parameter acr request cannot be combined with acr_values".into());
-    }
-    if acr_values.is_empty() {
-        acr_values = claims_request.acr_values.clone();
-    }
 
     // Validate client (auto-ensure lid-admin if requested)
     let client = match store::get_client(client_id).await? {
@@ -276,16 +220,7 @@ pub async fn handle(
         None => return Err(format!("unknown client_id: {client_id}")),
     };
 
-    if client.require_pushed_authorization_requests && !used_par {
-        return Err("client is required to use pushed authorization requests (PAR)".into());
-    }
-
-    // PKCE is required for public third-party clients; optional for confidential clients and first-party clients
-    if !client.first_party && client.client_secret.is_none() && code_challenge.is_none() {
-        return Err("missing code_challenge (PKCE required for public clients)".into());
-    }
-
-    // Validate redirect_uri
+    // Validate redirect_uri before any redirects (RFC 6749 §3.1.2.4 prevents Open Redirect)
     let is_valid_redirect = client.redirect_uris.iter().any(|u| {
         u == redirect_uri
             || (client.first_party
@@ -298,6 +233,125 @@ pub async fn handle(
         return Err("redirect_uri not registered for this client".into());
     }
 
+    // Required OIDC params
+    let response_type = match get("response_type") {
+        Some(rt) => rt,
+        None => {
+            return Ok(authorize_error_redirect(
+                redirect_uri,
+                state,
+                "invalid_request",
+                "missing response_type",
+                issuer,
+            ));
+        }
+    };
+    if response_type != "code" {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "unsupported_response_type",
+            &format!("unsupported response_type: {response_type}"),
+            issuer,
+        ));
+    }
+
+    if client.require_pushed_authorization_requests && !used_par {
+        return Err("client is required to use pushed authorization requests (PAR)".into());
+    }
+
+    let code_challenge = get("code_challenge");
+    let code_challenge_method = get("code_challenge_method").unwrap_or("S256");
+    if code_challenge.is_some() && code_challenge_method != "S256" {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "invalid_request",
+            "only S256 code_challenge_method is supported",
+            issuer,
+        ));
+    }
+
+    // PKCE is required for public third-party clients; optional for confidential clients and first-party clients
+    if !client.first_party && client.client_secret.is_none() && code_challenge.is_none() {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "invalid_request",
+            "missing code_challenge (PKCE required for public clients)",
+            issuer,
+        ));
+    }
+
+    let prompt = get("prompt").unwrap_or("");
+    let id_token_hint = get("id_token_hint");
+    let login_hint = get("login_hint");
+    let max_age = match get("max_age") {
+        Some(value) => match value.parse::<u64>() {
+            Ok(age) => Some(age),
+            Err(_) => {
+                return Ok(authorize_error_redirect(
+                    redirect_uri,
+                    state,
+                    "invalid_request",
+                    "invalid max_age (must be a non-negative integer)",
+                    issuer,
+                ));
+            }
+        },
+        None => None,
+    };
+
+    // ── IdP browser session: enables SSO and prompt=none ────────────
+    let idp_session = if prompt != "login" {
+        crate::account::get_idp_session_from_headers(headers).await
+    } else {
+        None
+    };
+    let idp_session = idp_session.filter(|s| {
+        max_age.map_or(true, |age| {
+            store::unix_now().saturating_sub(s.auth_time) <= age
+        })
+    });
+
+    if prompt == "none" && idp_session.is_none() {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "login_required",
+            "prompt=none requires existing session",
+            issuer,
+        ));
+    }
+
+    let scope = get("scope").unwrap_or("openid");
+    let nonce = get("nonce").unwrap_or("");
+    let mut acr_values = parse_acr_values(get("acr_values"));
+    let claims_request = match parse_claims_param(get("claims")) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(authorize_error_redirect(
+                redirect_uri,
+                state,
+                "invalid_request",
+                &e,
+                issuer,
+            ));
+        }
+    };
+    if !acr_values.is_empty() && !claims_request.acr_values.is_empty() {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "invalid_request",
+            "claims parameter acr request cannot be combined with acr_values",
+            issuer,
+        ));
+    }
+    if acr_values.is_empty() {
+        acr_values = claims_request.acr_values.clone();
+    }
+
     let validated_hint = match validate_id_token_hint(id_token_hint, issuer, client_id).await {
         Ok(value) => value,
         Err(_) => {
@@ -306,25 +360,17 @@ pub async fn handle(
                 state,
                 "invalid_request",
                 "invalid id_token_hint",
+                issuer,
             ));
         }
     };
 
     // ── IdP session fast-path: skip login page ──────────────────────
-    // If a valid browser session exists and the client does not require
-    // re-authentication, issue the auth code directly. This enables
-    // prompt=none for SPAs doing silent token renewal, and SSO across
-    // clients for interactive flows.
     if let Some(ref sso) = idp_session {
-        // If id_token_hint identifies a *different* user, fall through to
-        // the login page so the correct account can authenticate.
         let hint_matches = validated_hint
             .as_ref()
             .map_or(true, |hint| hint.user_id == sso.user_id);
 
-        // Check that requested ACR values are satisfiable by the existing
-        // session.  If the client demands TOTP MFA but the user only used a
-        // password, we must not silently satisfy it.
         let acr_satisfied = acr_values.is_empty()
             || acr_values.iter().all(|v| {
                 if v == "urn:lattice-id:mfa:totp" {
@@ -350,6 +396,7 @@ pub async fn handle(
                         prompt == "consent" || (!is_first_party && !already_consented);
 
                     let code = store::random_hex(32);
+                    let sid = store::random_hex(16);
                     let acr = crate::login::acr_from_amr(&sso.amr);
                     let auth_code = store::AuthCode {
                         user_id: user.id.clone(),
@@ -368,6 +415,7 @@ pub async fn handle(
                         csrf_token: String::new(),
                         expires_at: store::unix_now() + 300,
                         state: state.to_string(),
+                        sid: Some(sid),
                     };
                     store::save_auth_code(&code, &auth_code).await?;
                     let _ = store::log_audit("sso_reuse", &user.id, &user.id, client_id).await;
@@ -378,6 +426,15 @@ pub async fn handle(
                     let account_cookie = crate::account::create_session_cookie(&user.id).await.ok();
 
                     if needs_consent {
+                        if prompt == "none" {
+                            return Ok(authorize_error_redirect(
+                                redirect_uri,
+                                state,
+                                "consent_required",
+                                "interaction required: client requires user consent",
+                                issuer,
+                            ));
+                        }
                         let resp =
                             crate::login::consent_page(&code, &auth_code, &client, &user).await;
                         let (mut parts, body) = resp.into_parts();
@@ -410,18 +467,41 @@ pub async fn handle(
                 }
             }
         }
-        // Session unusable (deleted user, inactive, mismatched hint, ACR gap)
-        // — fall through to the normal login page.
+
+        // If prompt == "none" and session cannot satisfy request, error redirect
+        if prompt == "none" {
+            let err_code = if !acr_satisfied {
+                "interaction_required"
+            } else {
+                "login_required"
+            };
+            return Ok(authorize_error_redirect(
+                redirect_uri,
+                state,
+                err_code,
+                "prompt=none cannot be satisfied without user interaction",
+                issuer,
+            ));
+        }
+    }
+
+    // If prompt == "none", MUST NOT display login page
+    if prompt == "none" {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "login_required",
+            "prompt=none cannot be satisfied without user interaction",
+            issuer,
+        ));
     }
 
     // No valid IdP session — create an AuthSession and show the login page.
     let session_id = store::random_hex(16);
-    // Require consent when:
-    //  - explicitly requested with prompt=consent, OR
-    //  - the client is not first-party (and not the built-in admin/default clients)
     let builtin_clients = ["lid-admin", "lid-default"];
     let is_first_party = client.first_party || builtin_clients.contains(&client_id);
     let needs_consent = prompt == "consent" || !is_first_party;
+    let sid = store::random_hex(16);
     let session = AuthSession {
         client_id: client_id.to_string(),
         redirect_uri: redirect_uri.to_string(),
@@ -446,6 +526,7 @@ pub async fn handle(
         } else {
             Some(prompt.to_string())
         },
+        sid: Some(sid),
     };
     store::save_auth_session(&session_id, &session).await?;
 
@@ -550,11 +631,21 @@ mod tests {
             "state123",
             "invalid_request",
             "bad request",
+            "https://issuer.example.com",
         );
         assert_eq!(resp.status(), 302);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_request"));
         assert!(location.contains("state=state123"));
+        assert!(location.contains("iss=https%3A%2F%2Fissuer.example.com"));
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "no-store"
+        );
     }
 
     #[test]
@@ -564,10 +655,64 @@ mod tests {
             "",
             "access_denied",
             "denied",
+            "https://issuer.example.com",
         );
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=access_denied"));
         assert!(!location.contains("&state="));
+        assert!(location.contains("iss=https%3A%2F%2Fissuer.example.com"));
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "no-store"
+        );
+    }
+
+    #[test]
+    fn test_open_redirect_prevented_on_unregistered_client() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let query = "response_type=code&client_id=unknown-client&redirect_uri=https://attacker.example.com/cb&prompt=none";
+            let headers = http::HeaderMap::new();
+            let res = handle(query, "https://issuer.example.com", &headers).await;
+            // Must return an Err (400), NEVER 302 redirect
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("unknown client_id"));
+        });
+    }
+
+    #[test]
+    fn test_open_redirect_prevented_on_unregistered_redirect_uri() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "test-client-sec".to_string(),
+                client_secret: Some("secret".to_string()),
+                redirect_uris: vec!["https://legit.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "Test Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: false,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let query = "response_type=code&client_id=test-client-sec&redirect_uri=https://attacker.example.com/cb&prompt=none";
+            let headers = http::HeaderMap::new();
+            let res = handle(query, "https://issuer.example.com", &headers).await;
+            // Must return an Err (400), NEVER 302 redirect
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("redirect_uri not registered"));
+        });
     }
 
     #[test]
@@ -683,6 +828,41 @@ mod tests {
             // Verify the PAR entry was consumed (single-use)
             let consumed = store::get_pushed_auth_request(req_uri).await.unwrap();
             assert!(consumed.is_none());
+        });
+    }
+
+    #[test]
+    fn test_authorize_par_rejects_extra_query_params() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let req_uri = "urn:ietf:params:oauth:request_uri:tamper123";
+            let mut params = std::collections::HashMap::new();
+            params.insert("client_id".to_string(), "par-flow-client".to_string());
+            params.insert(
+                "redirect_uri".to_string(),
+                "https://app.example.com/cb".to_string(),
+            );
+            params.insert("response_type".to_string(), "code".to_string());
+            let now = store::unix_now();
+            let par_entry = store::PushedAuthRequest {
+                client_id: "par-flow-client".to_string(),
+                parameters: params,
+                created_at: now,
+                expires_at: now + 90,
+            };
+            store::save_pushed_auth_request(req_uri, &par_entry, 90)
+                .await
+                .unwrap();
+
+            let headers = http::HeaderMap::new();
+            // Tampering: query contains extra parameter `state=tampered`
+            let query = format!("client_id=par-flow-client&request_uri={req_uri}&state=tampered");
+            let res = handle(&query, "https://auth.example.com", &headers).await;
+            assert!(res.is_err());
+            assert!(
+                res.unwrap_err()
+                    .contains("MUST NOT contain other parameters")
+            );
         });
     }
 }

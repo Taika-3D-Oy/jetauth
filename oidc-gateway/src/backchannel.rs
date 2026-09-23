@@ -8,8 +8,8 @@
 
 /// Build and send a logout_token to a single client's backchannel_logout_uri.
 /// Returns Ok(()) even if the endpoint returns an error (we log it but don't fail).
-pub async fn notify_client(user_id: &str, client_id: &str, issuer: &str) {
-    let result = try_notify_client(user_id, client_id, issuer).await;
+pub async fn notify_client(user_id: &str, client_id: &str, issuer: &str, sid: Option<&str>) {
+    let result = try_notify_client(user_id, client_id, issuer, sid).await;
     if let Err(e) = result {
         crate::logger::error_message(
             "backchannel_logout.notify_failed",
@@ -19,13 +19,13 @@ pub async fn notify_client(user_id: &str, client_id: &str, issuer: &str) {
 }
 
 /// Send backchannel logout notifications to all clients that have active
-/// refresh tokens for the given user.  Called on full session revocation
+/// refresh tokens for the given user. Called on full session revocation
 /// (e.g. replay attack detected, admin force-logout).
-pub async fn notify_all_clients(user_id: &str, issuer: &str) {
+pub async fn notify_all_clients(user_id: &str, issuer: &str, sid: Option<&str>) {
     match crate::store::list_user_client_ids(user_id).await {
         Ok(client_ids) => {
             for client_id in client_ids {
-                notify_client(user_id, &client_id, issuer).await;
+                notify_client(user_id, &client_id, issuer, sid).await;
             }
         }
         Err(e) => {
@@ -34,7 +34,12 @@ pub async fn notify_all_clients(user_id: &str, issuer: &str) {
     }
 }
 
-async fn try_notify_client(user_id: &str, client_id: &str, issuer: &str) -> Result<(), String> {
+async fn try_notify_client(
+    user_id: &str,
+    client_id: &str,
+    issuer: &str,
+    sid: Option<&str>,
+) -> Result<(), String> {
     let client = match crate::store::get_client(client_id).await? {
         Some(c) => c,
         None => return Ok(()), // Client deleted since token was issued
@@ -49,7 +54,7 @@ async fn try_notify_client(user_id: &str, client_id: &str, issuer: &str) -> Resu
     crate::util::is_safe_external_url(&uri)
         .map_err(|e| format!("insecure backchannel_logout_uri '{uri}': {e}"))?;
 
-    let logout_token = build_logout_token(user_id, client_id, issuer).await?;
+    let logout_token = build_logout_token(user_id, client_id, issuer, sid).await?;
     let body = format!(
         "logout_token={}",
         crate::util::percent_encode(&logout_token)
@@ -71,9 +76,10 @@ async fn build_logout_token(
     user_id: &str,
     client_id: &str,
     issuer: &str,
+    sid: Option<&str>,
 ) -> Result<String, String> {
     let now = crate::store::unix_now();
-    let claims = serde_json::json!({
+    let mut claims = serde_json::json!({
         "iss": issuer,
         "sub": user_id,
         "aud": client_id,
@@ -84,6 +90,9 @@ async fn build_logout_token(
             "http://schemas.openid.net/event/backchannel-logout": {}
         }
     });
+    if let Some(s) = sid {
+        claims["sid"] = serde_json::json!(s);
+    }
     crate::jwt::sign(&claims).await
 }
 

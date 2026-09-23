@@ -39,7 +39,7 @@ pub async fn authenticate_client(
         );
     }
 
-    if let Some((basic_id, basic_secret)) = basic_auth {
+    let auth_client = if let Some((basic_id, basic_secret)) = basic_auth {
         if let Some(fid) = form_client_id {
             if fid != basic_id {
                 return Err(
@@ -51,13 +51,11 @@ pub async fn authenticate_client(
             .await?
             .ok_or_else(|| format!("unknown client_id: {basic_id}"))?;
         verify_secret(&client, Some(&basic_secret))?;
-        return Ok(AuthenticatedClient {
+        AuthenticatedClient {
             client,
             auth_method: "client_secret_basic".into(),
-        });
-    }
-
-    if let Some(assertion) = client_assertion {
+        }
+    } else if let Some(assertion) = client_assertion {
         let assertion_type = client_assertion_type.ok_or("missing client_assertion_type")?;
         if assertion_type != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
             return Err(format!(
@@ -162,33 +160,42 @@ pub async fn authenticate_client(
             .await
             .map_err(|e| format!("client_assertion jti replay: {e}"))?;
 
-        return Ok(AuthenticatedClient {
+        AuthenticatedClient {
             client,
             auth_method: "private_key_jwt".into(),
-        });
-    }
-
-    if let Some(cid) = form_client_id {
+        }
+    } else if let Some(cid) = form_client_id {
         let client = store::get_client(cid)
             .await?
             .ok_or_else(|| format!("unknown client_id: {cid}"))?;
 
         if let Some(secret) = form_client_secret {
             verify_secret(&client, Some(secret))?;
-            return Ok(AuthenticatedClient {
+            AuthenticatedClient {
                 client,
                 auth_method: "client_secret_post".into(),
-            });
+            }
         } else {
             verify_secret(&client, None)?;
-            return Ok(AuthenticatedClient {
+            AuthenticatedClient {
                 client,
                 auth_method: "none".into(),
-            });
+            }
+        }
+    } else {
+        return Err("client authentication failed: missing client credentials".into());
+    };
+
+    if let Some(expected) = auth_client.client.token_endpoint_auth_method.as_deref() {
+        if auth_client.auth_method != expected {
+            return Err(format!(
+                "client '{}' must use registered token_endpoint_auth_method '{}', but used '{}'",
+                auth_client.client.client_id, expected, auth_client.auth_method
+            ));
         }
     }
 
-    Err("client authentication failed: missing client credentials".into())
+    Ok(auth_client)
 }
 
 fn verify_secret(client: &OidcClient, client_secret: Option<&str>) -> Result<(), String> {
@@ -211,10 +218,13 @@ fn verify_secret(client: &OidcClient, client_secret: Option<&str>) -> Result<(),
         }
     } else {
         if client_secret.is_some() {
+            if let Some(expected) = client.token_endpoint_auth_method.as_deref() {
+                return Err(format!(
+                    "client '{}' must use registered token_endpoint_auth_method '{expected}'",
+                    client.client_id
+                ));
+            }
             return Err("public client cannot provide client_secret".into());
-        }
-        if client.token_endpoint_auth_method.as_deref() == Some("private_key_jwt") {
-            return Err("client configured for private_key_jwt authentication".into());
         }
         Ok(())
     }
@@ -363,6 +373,23 @@ mod tests {
                 authenticate_client(&form, None, "https://auth.example.com", "/token").await;
             assert!(res_replay.is_err());
             assert!(res_replay.unwrap_err().contains("replay"));
+
+            // 5. Mismatched auth method should fail: trying client_secret_post or basic when registered for private_key_jwt
+            let form_wrong_method =
+                vec![("client_id".to_string(), "private-key-client".to_string())];
+            let res_wrong = authenticate_client(
+                &form_wrong_method,
+                None,
+                "https://auth.example.com",
+                "/token",
+            )
+            .await;
+            assert!(res_wrong.is_err());
+            assert!(
+                res_wrong
+                    .unwrap_err()
+                    .contains("must use registered token_endpoint_auth_method")
+            );
         });
     }
 }

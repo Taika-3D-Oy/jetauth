@@ -6,9 +6,9 @@ Runs as a single wasmCloud WorkloadDeployment with [lattice-db](https://github.c
 
 ## Status
 
-**v1.12.0**
+**v1.13.0**
 
-- Full OIDC Core & OAuth 2.0 conformance (authorization code + PKCE S256, client credentials, refresh token family rotation, device flow)
+- Full OIDC Core 1.0 & OAuth 2.0 conformance and compliance hardening (scope-based PII gating, strict open-redirect & PAR validation, session ID `sid` tracking for back-channel logout)
 - Advanced OAuth 2.0 Security Profiles:
   - **RFC 9126 Pushed Authorization Requests (PAR)** (`/connect/par`, `/oauth/par`, `/as/par`) with 90s single-use `request_uri` and client enforcement policy
   - **RFC 9449 Demonstrating Proof-of-Possession (DPoP)** sender-constrained access tokens (`cnf: { jkt }`) and proof validation on token and resource (`/userinfo`) endpoints

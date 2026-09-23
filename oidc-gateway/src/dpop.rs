@@ -133,23 +133,7 @@ fn clean_uri(u: &str) -> &str {
 fn uri_matches(proof_uri: &str, expected_uri: &str) -> bool {
     let p = clean_uri(proof_uri);
     let e = clean_uri(expected_uri);
-    if p.eq_ignore_ascii_case(e) {
-        return true;
-    }
-
-    // Fallback: compare paths if both are valid URLs
-    let p_path = p
-        .split("://")
-        .nth(1)
-        .and_then(|s| s.find('/').map(|idx| &s[idx..]));
-    let e_path = e
-        .split("://")
-        .nth(1)
-        .and_then(|s| s.find('/').map(|idx| &s[idx..]));
-    match (p_path, e_path) {
-        (Some(p_p), Some(e_p)) => p_p == e_p,
-        _ => false,
-    }
+    p.eq_ignore_ascii_case(e)
 }
 
 #[cfg(test)]
@@ -257,6 +241,16 @@ mod tests {
         ));
         assert!(uri_err.is_err());
         assert!(uri_err.unwrap_err().contains("htu"));
+
+        // Cross-origin proof reuse attempt (same path, different host)
+        let cross_origin_err = futures::executor::block_on(validate_dpop_proof(
+            &proof_get,
+            "GET",
+            "https://attacker.example.com/userinfo",
+            Some("test_token_123"),
+        ));
+        assert!(cross_origin_err.is_err());
+        assert!(cross_origin_err.unwrap_err().contains("htu"));
 
         // Mismatched access token hash (ath)
         let ath_err = futures::executor::block_on(validate_dpop_proof(

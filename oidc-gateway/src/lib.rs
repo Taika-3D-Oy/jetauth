@@ -506,7 +506,12 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         }
 
         (&Method::GET, "/userinfo") | (&Method::POST, "/userinfo") => {
-            userinfo::handle(auth, dpop, &issuer, parts.method.as_str()).await
+            let body_bytes = if parts.method == Method::POST {
+                read_body(body).await?
+            } else {
+                Vec::new()
+            };
+            userinfo::handle(auth, dpop, &issuer, parts.method.as_str(), &body_bytes).await
         }
 
         // ── Logout ──────────────────────────────────────────
@@ -1234,8 +1239,9 @@ async fn handle_logout(
             .get("aud")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let sid = claims.get("sid").and_then(|v| v.as_str());
         // Backchannel logout: notify clients before revoking tokens
-        backchannel::notify_all_clients(sub, &get_issuer()).await;
+        backchannel::notify_all_clients(sub, &get_issuer(), sid).await;
         // Revoke all refresh tokens for this user
         let _ = store::delete_user_refresh_tokens(sub).await;
         let _ = store::log_audit("logout", sub, sub, "").await;
