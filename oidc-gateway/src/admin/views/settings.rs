@@ -83,12 +83,29 @@ pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
 
                 div class="toggle-row" {
                     div class="toggle-label" {
-                        h3 { "Public User Registration" }
+                        h3 { "Public End-User Registration" }
                         p { "When enabled, unauthenticated visitors can create new user accounts via /register." }
                     }
                     label class="toggle-switch" {
                         input type="checkbox" name="allow_registration" value="true" checked[settings.allow_registration];
                         span class="toggle-track" {}
+                    }
+                }
+
+                div class="form-divider" style="border-top: 1px solid var(--border-color); margin: 24px 0;" {}
+
+                div class="toggle-row" {
+                    div class="toggle-label" {
+                        h3 { "OAuth 2.0 Dynamic Client Registration (RFC 7591)" }
+                        p { "Allows external applications to dynamically register via POST /connect/register. Gated via runtime configuration (client_registration_mode)." }
+                    }
+                    @let reg_mode = store::client_registration_mode();
+                    div style="display:flex; align-items:center;" {
+                        @match reg_mode.as_str() {
+                            "open" => span class="badge badge-success" style="font-size:12px; padding:4px 10px;" { "● Open (Public)" },
+                            "protected" => span class="badge badge-accent" style="font-size:12px; padding:4px 10px;" { "● Protected (Bearer Token)" },
+                            _ => span class="badge badge-muted" style="font-size:12px; padding:4px 10px;" { "● Disabled (Default)" },
+                        }
                     }
                 }
 

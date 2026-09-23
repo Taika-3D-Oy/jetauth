@@ -158,6 +158,7 @@ pub async fn handle_admin_route(
             let name = form_value(&form, "name").unwrap_or("").trim();
             let client_type = form_value(&form, "client_type").unwrap_or("confidential");
             let uris_raw = form_value(&form, "redirect_uris").unwrap_or("");
+            let post_logout_uris_raw = form_value(&form, "post_logout_redirect_uris").unwrap_or("");
             let first_party = form_value(&form, "first_party").map(|v| v == "true" || v == "on").unwrap_or(false);
             let id_token_signed_response_alg = form_value(&form, "id_token_signed_response_alg")
                 .filter(|a| !a.trim().is_empty())
@@ -189,6 +190,12 @@ pub async fn handle_admin_route(
                 .filter(|l| !l.is_empty())
                 .collect();
 
+            let post_logout_redirect_uris: Vec<String> = post_logout_uris_raw
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+
             let client_id = format!("client_{}", &store::random_alphanumeric(16));
             let (client_secret, raw_secret_opt) = if client_type == "confidential" {
                 let raw = store::random_alphanumeric(32);
@@ -215,6 +222,7 @@ pub async fn handle_admin_route(
                 client_id: client_id.clone(),
                 client_secret,
                 redirect_uris,
+                post_logout_redirect_uris,
                 grant_types,
                 name: name.to_string(),
                 first_party,
@@ -505,13 +513,16 @@ async fn handle_parameterized_route(
                     ));
                 }
             }
-            if sub == "redirect-uris" && method == Method::POST {
+            if (sub == "redirect-uris" || sub == "post-logout-redirect-uris") && method == Method::POST {
                 let form = parse_form(body);
                 if let Ok(Some(mut client)) = store::get_client(id).await {
                     if let Some(uris) = form_value(&form, "redirect_uris") {
                         client.redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-                        let _ = store::save_client(&client).await;
                     }
+                    if let Some(uris) = form_value(&form, "post_logout_redirect_uris") {
+                        client.post_logout_redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                    }
+                    let _ = store::save_client(&client).await;
                 }
                 return redirect_response(&format!("/admin/clients/{id}"));
             }
@@ -606,6 +617,9 @@ async fn handle_parameterized_route(
                     }
                     if let Some(uris) = form_value(&form, "redirect_uris") {
                         client.redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                    }
+                    if let Some(uris) = form_value(&form, "post_logout_redirect_uris") {
+                        client.post_logout_redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
                     }
                     let _ = store::save_client(&client).await;
                     return redirect_response(&format!("/admin/clients/{id}"));
@@ -1785,5 +1799,19 @@ mod tests {
         let mut wrong_headers = HeaderMap::new();
         wrong_headers.insert("x-csrf-token", "wrong-token".parse().unwrap());
         assert!(verify_admin_csrf(&wrong_headers, b"{}", &session).is_err());
+    }
+
+    #[test]
+    fn test_parse_redirect_uris_and_post_logout_uris() {
+        let form_body = b"redirect_uris=https%3A%2F%2Fapp.com%2Fcb%0Ahttp%3A%2F%2Flocalhost%3A3000%2Fcb&post_logout_redirect_uris=https%3A%2F%2Fapp.com%2Flogout%0Ahttp%3A%2F%2Flocalhost%3A3000%2F";
+        let form = parse_form(form_body);
+        let uris_raw = form_value(&form, "redirect_uris").unwrap();
+        let post_logout_raw = form_value(&form, "post_logout_redirect_uris").unwrap();
+
+        let redirect_uris: Vec<String> = uris_raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        let post_logout_uris: Vec<String> = post_logout_raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+
+        assert_eq!(redirect_uris, vec!["https://app.com/cb", "http://localhost:3000/cb"]);
+        assert_eq!(post_logout_uris, vec!["https://app.com/logout", "http://localhost:3000/"]);
     }
 }

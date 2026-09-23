@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added fast-path and main router support for `/.well-known/oauth-authorization-server`.
 - **REST Client Management**:
   - Added programmatic `GET /api/clients/:id` and `DELETE /api/clients/:id` endpoints.
+- **Admin Console UI/UX Alignment**:
+  - Added `post_logout_redirect_uris` inputs to the "Add Client" modal and Client Detail settings page.
+  - Added Dynamic Client Registration (RFC 7591) status indicator to System Settings.
+  - Displayed login and post-logout redirect counts in the client overview table.
 
 ### Changed
 

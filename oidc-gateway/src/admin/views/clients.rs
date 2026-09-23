@@ -80,7 +80,10 @@ pub fn render_clients_table(clients: &[OidcClient]) -> Markup {
                                     span class="badge badge-muted" { (c.id_token_signed_response_alg.as_deref().unwrap_or("RS256")) }
                                 }
                                 td class="mono-sm" {
-                                    (c.redirect_uris.len()) " configured"
+                                    (c.redirect_uris.len()) " login"
+                                    @if !c.post_logout_redirect_uris.is_empty() {
+                                        ", " (c.post_logout_redirect_uris.len()) " logout"
+                                    }
                                 }
                                 td class="actions" {
                                     a href={"/admin/clients/" (c.client_id)} class="btn btn-xs" { "Configure →" }
@@ -112,8 +115,13 @@ pub fn render_new_client_modal() -> Markup {
                         input type="text" id="name" name="name" required placeholder="Dashboard Web App";
                     }
                     div class="form-group" {
-                        label for="redirect_uris" { "Redirect URIs (one per line)" }
+                        label for="redirect_uris" { "Login Redirect URIs (one per line)" }
                         textarea id="redirect_uris" name="redirect_uris" required placeholder="https://app.example.com/oauth/callback&#10;http://localhost:3000/callback" {}
+                    }
+                    div class="form-group" {
+                        label for="post_logout_redirect_uris" { "Post-Logout Redirect URIs (optional, one per line)" }
+                        textarea id="post_logout_redirect_uris" name="post_logout_redirect_uris" placeholder="https://app.example.com/&#10;http://localhost:3000/" {}
+                        div class="form-hint" { "Allowed destination URLs after OpenID Connect RP-Initiated logout." }
                     }
                     div class="form-group" {
                         label for="client_type" { "Client Type" }
@@ -218,6 +226,7 @@ pub async fn render_client_detail_page(
     new_created_secret: Option<&str>,
 ) -> Response<String> {
     let redirect_uris_text = client.redirect_uris.join("\n");
+    let post_logout_redirect_uris_text = client.post_logout_redirect_uris.join("\n");
     let is_confidential = client.client_secret.is_some();
     let theme = client.theme.clone().unwrap_or_default();
     let current_preset = theme.theme_preset.as_deref().unwrap_or("");
@@ -359,17 +368,23 @@ pub async fn render_client_detail_page(
             }
         }
 
-        // ── Redirect URIs Card ──
+        // ── Redirect & Logout URIs Card ──
         div class="card" {
             div class="card-header" {
-                span class="card-title" { "Allowed Redirect URIs" }
+                span class="card-title" { "Allowed Redirect & Logout URIs" }
             }
             form hx-post={"/admin/clients/" (client.client_id) "/redirect-uris"} hx-target="body" {
                 div class="form-group" {
-                    textarea name="redirect_uris" rows="4" { (redirect_uris_text) }
-                    div class="form-hint" { "One URL per line. Absolute HTTP/HTTPS URLs." }
+                    label { "Login Redirect URIs (OAuth 2.0 / OIDC Authorization Code Flow)" }
+                    textarea name="redirect_uris" rows="3" { (redirect_uris_text) }
+                    div class="form-hint" { "One URL per line. Destination URLs where authorization codes can be returned." }
                 }
-                button type="submit" class="btn btn-primary" { "Save Redirect URIs" }
+                div class="form-group" style="margin-top: 16px;" {
+                    label { "Post-Logout Redirect URIs (RP-Initiated Logout 1.0)" }
+                    textarea name="post_logout_redirect_uris" rows="3" { (post_logout_redirect_uris_text) }
+                    div class="form-hint" { "One URL per line. Destination URLs permitted for post_logout_redirect_uri per OpenID Connect RP-Initiated Logout 1.0." }
+                }
+                button type="submit" class="btn btn-primary" style="margin-top: 8px;" { "Save Redirect URIs" }
             }
         }
 
