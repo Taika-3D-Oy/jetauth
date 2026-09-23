@@ -2,11 +2,14 @@ pub mod layout;
 pub mod static_assets;
 pub mod views;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use http::{HeaderMap, Method, Response, StatusCode};
 use crate::admin::layout::AdminSession;
-use crate::store::{self, AccountSession, ClientTheme, Hook, HookVersion, IdentityProvider, Invitation, Membership, OidcClient, Tenant, User};
+use crate::store::{
+    self, AccountSession, ClientTheme, Hook, HookVersion, IdentityProvider, Invitation, Membership,
+    OidcClient, Tenant, User,
+};
 use crate::util::{form_value, parse_form, parse_query};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use http::{HeaderMap, Method, Response, StatusCode};
 
 pub async fn handle_admin_route(
     method: &Method,
@@ -42,7 +45,11 @@ pub async fn handle_admin_route(
     // ── Public Auth Routes (Login, MFA, Logout) ──
     let path_no_query = path.split('?').next().unwrap_or(path);
     let clean_path = path_no_query.trim_end_matches('/');
-    let p = if clean_path.is_empty() { "/admin" } else { clean_path };
+    let p = if clean_path.is_empty() {
+        "/admin"
+    } else {
+        clean_path
+    };
 
     if p == "/admin/login" {
         if method == Method::POST {
@@ -89,13 +96,15 @@ pub async fn handle_admin_route(
     // ── Route Dispatch ──
     let path_no_query = path.split('?').next().unwrap_or(path);
     let clean_path = path_no_query.trim_end_matches('/');
-    let p = if clean_path.is_empty() { "/admin" } else { clean_path };
+    let p = if clean_path.is_empty() {
+        "/admin"
+    } else {
+        clean_path
+    };
 
     match (method, p) {
         // ── Dashboard ──
-        (&Method::GET, "/admin") => {
-            views::dashboard::render_dashboard(&session).await
-        }
+        (&Method::GET, "/admin") => views::dashboard::render_dashboard(&session).await,
 
         // ── Tenant Switcher ──
         (&Method::POST, "/admin/tenant/switch") => {
@@ -105,15 +114,16 @@ pub async fn handle_admin_route(
                 .status(StatusCode::SEE_OTHER)
                 .header("location", "/admin")
                 .header("HX-Redirect", "/admin")
-                .header("set-cookie", format!("lid_tenant={tenant_id}; Path=/admin; SameSite=Lax; HttpOnly"))
+                .header(
+                    "set-cookie",
+                    format!("lid_tenant={tenant_id}; Path=/admin; SameSite=Lax; HttpOnly"),
+                )
                 .body(String::new())
                 .unwrap()
         }
 
         // ── Tenants ──
-        (&Method::GET, "/admin/tenants") => {
-            views::tenants::render_tenants_page(&session).await
-        }
+        (&Method::GET, "/admin/tenants") => views::tenants::render_tenants_page(&session).await,
         (&Method::GET, "/admin/tenants/modal/new") => {
             html_response(views::tenants::render_new_tenant_modal().into_string())
         }
@@ -133,7 +143,10 @@ pub async fn handle_admin_route(
                 created_at: store::unix_now(),
             };
             if let Err(e) = store::create_tenant(&tenant).await {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save tenant: {e}"));
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to save tenant: {e}"),
+                );
             }
             // Add creator as owner
             let membership = Membership {
@@ -147,9 +160,7 @@ pub async fn handle_admin_route(
         }
 
         // ── Clients ──
-        (&Method::GET, "/admin/clients") => {
-            views::clients::render_clients_page(&session).await
-        }
+        (&Method::GET, "/admin/clients") => views::clients::render_clients_page(&session).await,
         (&Method::GET, "/admin/clients/modal/new") => {
             html_response(views::clients::render_new_client_modal().into_string())
         }
@@ -159,7 +170,9 @@ pub async fn handle_admin_route(
             let client_type = form_value(&form, "client_type").unwrap_or("confidential");
             let uris_raw = form_value(&form, "redirect_uris").unwrap_or("");
             let post_logout_uris_raw = form_value(&form, "post_logout_redirect_uris").unwrap_or("");
-            let first_party = form_value(&form, "first_party").map(|v| v == "true" || v == "on").unwrap_or(false);
+            let first_party = form_value(&form, "first_party")
+                .map(|v| v == "true" || v == "on")
+                .unwrap_or(false);
             let id_token_signed_response_alg = form_value(&form, "id_token_signed_response_alg")
                 .filter(|a| !a.trim().is_empty())
                 .map(|a| a.trim().to_string());
@@ -171,14 +184,28 @@ pub async fn handle_admin_route(
                 .map(|s| s.to_string())
                 .collect();
             if grant_types.is_empty() {
-                grant_types = vec!["authorization_code".to_string(), "refresh_token".to_string()];
+                grant_types = vec![
+                    "authorization_code".to_string(),
+                    "refresh_token".to_string(),
+                ];
             }
 
-            let app_name = form_value(&form, "app_name").filter(|s| !s.trim().is_empty()).unwrap_or(name).to_string();
-            let theme_preset = form_value(&form, "theme_preset").filter(|s| !s.trim().is_empty()).map(|s| s.to_string());
-            let logo_url = form_value(&form, "logo_url").filter(|s| !s.trim().is_empty()).map(|s| s.to_string());
-            let primary_color = form_value(&form, "primary_color").filter(|s| !s.trim().is_empty()).map(|s| s.to_string());
-            let background_color = form_value(&form, "background_color").filter(|s| !s.trim().is_empty()).map(|s| s.to_string());
+            let app_name = form_value(&form, "app_name")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(name)
+                .to_string();
+            let theme_preset = form_value(&form, "theme_preset")
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            let logo_url = form_value(&form, "logo_url")
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            let primary_color = form_value(&form, "primary_color")
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            let background_color = form_value(&form, "background_color")
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
 
             if name.is_empty() {
                 return error_response(StatusCode::BAD_REQUEST, "Client name is required");
@@ -205,7 +232,12 @@ pub async fn handle_admin_route(
                 (None, None)
             };
 
-            let theme = if logo_url.is_some() || primary_color.is_some() || background_color.is_some() || theme_preset.is_some() || app_name != name {
+            let theme = if logo_url.is_some()
+                || primary_color.is_some()
+                || background_color.is_some()
+                || theme_preset.is_some()
+                || app_name != name
+            {
                 Some(ClientTheme {
                     app_name,
                     theme_preset,
@@ -233,30 +265,37 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_client(&client).await {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save client: {e}"));
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to save client: {e}"),
+                );
             }
             if let Some(raw_secret) = raw_secret_opt {
-                views::clients::render_client_detail_page(&session, &client, Some(&raw_secret)).await
+                views::clients::render_client_detail_page(&session, &client, Some(&raw_secret))
+                    .await
             } else {
                 redirect_response(&format!("/admin/clients/{client_id}"))
             }
         }
 
         // ── Users ──
-        (&Method::GET, "/admin/users") => {
-            views::users::render_users_page(&session).await
-        }
+        (&Method::GET, "/admin/users") => views::users::render_users_page(&session).await,
         (&Method::GET, "/admin/users/search") => {
             let query_str = path.split_once('?').map(|(_, qs)| qs).unwrap_or("");
             let q = parse_query(query_str);
-            let query_term = form_value(&q, "q").map(|s| s.to_lowercase()).unwrap_or_default();
+            let query_term = form_value(&q, "q")
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
             let all_users = store::list_users().await.unwrap_or_default();
             let filtered: Vec<User> = if query_term.is_empty() {
                 all_users
             } else {
                 all_users
                     .into_iter()
-                    .filter(|u| u.email.to_lowercase().contains(&query_term) || u.name.to_lowercase().contains(&query_term))
+                    .filter(|u| {
+                        u.email.to_lowercase().contains(&query_term)
+                            || u.name.to_lowercase().contains(&query_term)
+                    })
                     .collect()
             };
             html_response(views::users::render_users_table(&filtered).into_string())
@@ -271,13 +310,26 @@ pub async fn handle_admin_route(
         }
         (&Method::POST, "/admin/identity-providers") => {
             let form = parse_form(body);
-            let provider_type = form_value(&form, "provider_type").unwrap_or("google").to_string();
-            let client_id = form_value(&form, "client_id").unwrap_or("").trim().to_string();
-            let client_secret = form_value(&form, "client_secret").unwrap_or("").trim().to_string();
-            let enabled = form_value(&form, "enabled").map(|v| v == "true" || v == "on").unwrap_or(false);
+            let provider_type = form_value(&form, "provider_type")
+                .unwrap_or("google")
+                .to_string();
+            let client_id = form_value(&form, "client_id")
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let client_secret = form_value(&form, "client_secret")
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let enabled = form_value(&form, "enabled")
+                .map(|v| v == "true" || v == "on")
+                .unwrap_or(false);
 
             if client_id.is_empty() || client_secret.is_empty() {
-                return error_response(StatusCode::BAD_REQUEST, "Client ID and Client Secret required");
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Client ID and Client Secret required",
+                );
             }
 
             let id = format!("idp_{}", &store::random_alphanumeric(12));
@@ -292,15 +344,16 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_identity_provider(&idp).await {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save IDP: {e}"));
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to save IDP: {e}"),
+                );
             }
             redirect_response("/admin/identity-providers")
         }
 
         // ── Hooks ──
-        (&Method::GET, "/admin/hooks") => {
-            views::hooks::render_hooks_page(&session).await
-        }
+        (&Method::GET, "/admin/hooks") => views::hooks::render_hooks_page(&session).await,
         (&Method::GET, "/admin/hooks/new") => {
             views::hooks::render_hook_editor_page(&session, None, &[]).await
         }
@@ -308,12 +361,19 @@ pub async fn handle_admin_route(
             let form = parse_form(body);
             let name = form_value(&form, "name").unwrap_or("").trim();
             let trigger = form_value(&form, "trigger").unwrap_or("post-login");
-            let priority: i32 = form_value(&form, "priority").and_then(|p| p.parse().ok()).unwrap_or(100);
-            let enabled = form_value(&form, "enabled").map(|v| v == "true" || v == "on").unwrap_or(false);
+            let priority: i32 = form_value(&form, "priority")
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(100);
+            let enabled = form_value(&form, "enabled")
+                .map(|v| v == "true" || v == "on")
+                .unwrap_or(false);
             let script = form_value(&form, "script").unwrap_or("");
 
             if name.is_empty() || script.is_empty() {
-                return error_response(StatusCode::BAD_REQUEST, "Hook name and script cannot be empty");
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Hook name and script cannot be empty",
+                );
             }
 
             let id = format!("hook_{}", &store::random_alphanumeric(12));
@@ -334,7 +394,10 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_hook(&hook).await {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save hook: {e}"));
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to save hook: {e}"),
+                );
             }
 
             let version_snapshot = HookVersion {
@@ -355,12 +418,12 @@ pub async fn handle_admin_route(
         }
 
         // ── Settings ──
-        (&Method::GET, "/admin/settings") => {
-            views::settings::render_settings_page(&session).await
-        }
+        (&Method::GET, "/admin/settings") => views::settings::render_settings_page(&session).await,
         (&Method::POST, "/admin/settings") => {
             let form = parse_form(body);
-            let allow_reg = form_value(&form, "allow_registration").map(|v| v == "true" || v == "on").unwrap_or(false);
+            let allow_reg = form_value(&form, "allow_registration")
+                .map(|v| v == "true" || v == "on")
+                .unwrap_or(false);
             let mut settings = store::get_runtime_settings().await;
             settings.allow_registration = allow_reg;
 
@@ -369,24 +432,50 @@ pub async fn handle_admin_route(
                 def_theme.app_name = app_name.trim().to_string();
             }
             if let Some(preset) = form_value(&form, "default_theme_preset") {
-                def_theme.theme_preset = if preset.is_empty() { None } else { Some(preset.to_string()) };
+                def_theme.theme_preset = if preset.is_empty() {
+                    None
+                } else {
+                    Some(preset.to_string())
+                };
             }
             if let Some(logo_url) = form_value(&form, "default_logo_url") {
-                def_theme.logo_url = if logo_url.trim().is_empty() { None } else { Some(logo_url.trim().to_string()) };
+                def_theme.logo_url = if logo_url.trim().is_empty() {
+                    None
+                } else {
+                    Some(logo_url.trim().to_string())
+                };
             }
             if let Some(color) = form_value(&form, "default_primary_color") {
-                def_theme.primary_color = if color.trim().is_empty() { None } else { Some(color.trim().to_string()) };
+                def_theme.primary_color = if color.trim().is_empty() {
+                    None
+                } else {
+                    Some(color.trim().to_string())
+                };
             }
             if let Some(pb) = form_value(&form, "default_powered_by_text") {
-                def_theme.powered_by_text = if pb.trim().is_empty() { None } else { Some(pb.trim().to_string()) };
+                def_theme.powered_by_text = if pb.trim().is_empty() {
+                    None
+                } else {
+                    Some(pb.trim().to_string())
+                };
             }
             if let Some(ft) = form_value(&form, "default_footer_text") {
-                def_theme.footer_text = if ft.trim().is_empty() { None } else { Some(ft.trim().to_string()) };
+                def_theme.footer_text = if ft.trim().is_empty() {
+                    None
+                } else {
+                    Some(ft.trim().to_string())
+                };
             }
-            let hide_pb = form_value(&form, "default_hide_powered_by").map(|v| v == "true" || v == "on").unwrap_or(false);
+            let hide_pb = form_value(&form, "default_hide_powered_by")
+                .map(|v| v == "true" || v == "on")
+                .unwrap_or(false);
             def_theme.hide_powered_by = hide_pb;
             if let Some(css) = form_value(&form, "default_custom_css") {
-                def_theme.custom_css = if css.trim().is_empty() { None } else { Some(css.to_string()) };
+                def_theme.custom_css = if css.trim().is_empty() {
+                    None
+                } else {
+                    Some(css.to_string())
+                };
             }
 
             if let Some(days_str) = form_value(&form, "idp_session_ttl_days") {
@@ -419,9 +508,7 @@ pub async fn handle_admin_route(
         }
 
         // ── My Account ──
-        (&Method::GET, "/admin/account") => {
-            views::account::render_account_page(&session).await
-        }
+        (&Method::GET, "/admin/account") => views::account::render_account_page(&session).await,
         (&Method::POST, "/admin/account/passkeys/register-options") => {
             handle_admin_passkey_register_options(&session).await
         }
@@ -465,13 +552,18 @@ async fn handle_parameterized_route(
                         members.push((m, u));
                     }
                 }
-                return html_response(views::tenants::render_members_table(id, &members).into_string());
+                return html_response(
+                    views::tenants::render_members_table(id, &members).into_string(),
+                );
             }
             // e.g. /admin/tenants/{id}/members/{userId}
             if let Some(user_id) = sub.strip_prefix("members/") {
                 if method == Method::DELETE {
                     let _ = store::remove_membership(id, user_id).await;
-                    return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .body(String::new())
+                        .unwrap();
                 }
             }
         } else {
@@ -486,7 +578,8 @@ async fn handle_parameterized_route(
                             members.push((m, u));
                         }
                     }
-                    return views::tenants::render_tenant_detail_page(session, &tenant, &members).await;
+                    return views::tenants::render_tenant_detail_page(session, &tenant, &members)
+                        .await;
                 }
             } else if method == Method::DELETE {
                 let _ = store::delete_tenant(id).await;
@@ -513,14 +606,24 @@ async fn handle_parameterized_route(
                     ));
                 }
             }
-            if (sub == "redirect-uris" || sub == "post-logout-redirect-uris") && method == Method::POST {
+            if (sub == "redirect-uris" || sub == "post-logout-redirect-uris")
+                && method == Method::POST
+            {
                 let form = parse_form(body);
                 if let Ok(Some(mut client)) = store::get_client(id).await {
                     if let Some(uris) = form_value(&form, "redirect_uris") {
-                        client.redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                        client.redirect_uris = uris
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
                     }
                     if let Some(uris) = form_value(&form, "post_logout_redirect_uris") {
-                        client.post_logout_redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                        client.post_logout_redirect_uris = uris
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
                     }
                     let _ = store::save_client(&client).await;
                 }
@@ -552,7 +655,9 @@ async fn handle_parameterized_route(
                         .filter(|u| !u.trim().is_empty())
                         .map(|u| u.trim().to_string());
                     client.backchannel_logout_uri = uri;
-                    let req_sid = form_value(&form, "backchannel_logout_session_required").map(|v| v == "true" || v == "on").unwrap_or(false);
+                    let req_sid = form_value(&form, "backchannel_logout_session_required")
+                        .map(|v| v == "true" || v == "on")
+                        .unwrap_or(false);
                     client.backchannel_logout_session_required = req_sid;
                     let _ = store::save_client(&client).await;
                 }
@@ -566,36 +671,78 @@ async fn handle_parameterized_route(
                         theme.app_name = an.trim().to_string();
                     }
                     if let Some(tp) = form_value(&form, "theme_preset") {
-                        theme.theme_preset = if tp.is_empty() { None } else { Some(tp.to_string()) };
+                        theme.theme_preset = if tp.is_empty() {
+                            None
+                        } else {
+                            Some(tp.to_string())
+                        };
                     }
                     if let Some(logo) = form_value(&form, "logo_url") {
-                        theme.logo_url = if logo.trim().is_empty() { None } else { Some(logo.trim().to_string()) };
+                        theme.logo_url = if logo.trim().is_empty() {
+                            None
+                        } else {
+                            Some(logo.trim().to_string())
+                        };
                     }
                     if let Some(color) = form_value(&form, "primary_color") {
-                        theme.primary_color = if color.trim().is_empty() { None } else { Some(color.trim().to_string()) };
+                        theme.primary_color = if color.trim().is_empty() {
+                            None
+                        } else {
+                            Some(color.trim().to_string())
+                        };
                     }
                     if let Some(bg) = form_value(&form, "background_color") {
-                        theme.background_color = if bg.trim().is_empty() { None } else { Some(bg.trim().to_string()) };
+                        theme.background_color = if bg.trim().is_empty() {
+                            None
+                        } else {
+                            Some(bg.trim().to_string())
+                        };
                     }
                     if let Some(bg_img) = form_value(&form, "background_image_url") {
-                        theme.background_image_url = if bg_img.trim().is_empty() { None } else { Some(bg_img.trim().to_string()) };
+                        theme.background_image_url = if bg_img.trim().is_empty() {
+                            None
+                        } else {
+                            Some(bg_img.trim().to_string())
+                        };
                     }
                     if let Some(ff) = form_value(&form, "font_family") {
-                        theme.font_family = if ff.trim().is_empty() { None } else { Some(ff.trim().to_string()) };
+                        theme.font_family = if ff.trim().is_empty() {
+                            None
+                        } else {
+                            Some(ff.trim().to_string())
+                        };
                     }
                     if let Some(fu) = form_value(&form, "font_url") {
-                        theme.font_url = if fu.trim().is_empty() { None } else { Some(fu.trim().to_string()) };
+                        theme.font_url = if fu.trim().is_empty() {
+                            None
+                        } else {
+                            Some(fu.trim().to_string())
+                        };
                     }
                     if let Some(pb) = form_value(&form, "powered_by_text") {
-                        theme.powered_by_text = if pb.trim().is_empty() { None } else { Some(pb.trim().to_string()) };
+                        theme.powered_by_text = if pb.trim().is_empty() {
+                            None
+                        } else {
+                            Some(pb.trim().to_string())
+                        };
                     }
                     if let Some(ft) = form_value(&form, "footer_text") {
-                        theme.footer_text = if ft.trim().is_empty() { None } else { Some(ft.trim().to_string()) };
+                        theme.footer_text = if ft.trim().is_empty() {
+                            None
+                        } else {
+                            Some(ft.trim().to_string())
+                        };
                     }
-                    let hide_pb = form_value(&form, "hide_powered_by").map(|v| v == "true" || v == "on").unwrap_or(false);
+                    let hide_pb = form_value(&form, "hide_powered_by")
+                        .map(|v| v == "true" || v == "on")
+                        .unwrap_or(false);
                     theme.hide_powered_by = hide_pb;
                     if let Some(css) = form_value(&form, "custom_css") {
-                        theme.custom_css = if css.trim().is_empty() { None } else { Some(css.to_string()) };
+                        theme.custom_css = if css.trim().is_empty() {
+                            None
+                        } else {
+                            Some(css.to_string())
+                        };
                     }
 
                     client.theme = Some(theme);
@@ -616,17 +763,28 @@ async fn handle_parameterized_route(
                         client.name = name.trim().to_string();
                     }
                     if let Some(uris) = form_value(&form, "redirect_uris") {
-                        client.redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                        client.redirect_uris = uris
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
                     }
                     if let Some(uris) = form_value(&form, "post_logout_redirect_uris") {
-                        client.post_logout_redirect_uris = uris.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                        client.post_logout_redirect_uris = uris
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
                     }
                     let _ = store::save_client(&client).await;
                     return redirect_response(&format!("/admin/clients/{id}"));
                 }
             } else if method == Method::DELETE {
                 let _ = store::delete_client(id).await;
-                return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .body(String::new())
+                    .unwrap();
             }
         }
     }
@@ -651,7 +809,8 @@ async fn handle_parameterized_route(
                         &user.email,
                         &user.name,
                         &reset_token,
-                    ).await;
+                    )
+                    .await;
                 }
                 return redirect_response(&format!("/admin/users/{id}"));
             }
@@ -666,11 +825,15 @@ async fn handle_parameterized_route(
             if let Some(cred_id) = sub.strip_prefix("passkeys/") {
                 if method == Method::DELETE {
                     if let Ok(Some(mut user)) = store::get_user(id).await {
-                        user.passkey_credentials.retain(|p| p.credential_id != cred_id);
+                        user.passkey_credentials
+                            .retain(|p| p.credential_id != cred_id);
                         let _ = store::update_user(&user).await;
                         let _ = store::unindex_passkey_credential(cred_id).await;
                     }
-                    return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .body(String::new())
+                        .unwrap();
                 }
             }
         } else {
@@ -698,7 +861,10 @@ async fn handle_parameterized_route(
                 if let Ok(Some(mut idp)) = store::get_identity_provider(id).await {
                     idp.enabled = !idp.enabled;
                     if let Err(e) = store::save_identity_provider(&idp).await {
-                        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to update IDP: {e}"));
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("Failed to update IDP: {e}"),
+                        );
                     }
                     return html_response(views::idps::render_idp_row(&idp).into_string());
                 } else {
@@ -712,9 +878,17 @@ async fn handle_parameterized_route(
                 }
             } else if action == "update" && method == Method::POST {
                 let form = parse_form(body);
-                let client_id = form_value(&form, "client_id").unwrap_or("").trim().to_string();
-                let client_secret = form_value(&form, "client_secret").unwrap_or("").trim().to_string();
-                let enabled = form_value(&form, "enabled").map(|v| v == "true" || v == "on").unwrap_or(false);
+                let client_id = form_value(&form, "client_id")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let client_secret = form_value(&form, "client_secret")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let enabled = form_value(&form, "enabled")
+                    .map(|v| v == "true" || v == "on")
+                    .unwrap_or(false);
 
                 if let Ok(Some(mut idp)) = store::get_identity_provider(id).await {
                     if !client_id.is_empty() {
@@ -725,7 +899,10 @@ async fn handle_parameterized_route(
                     }
                     idp.enabled = enabled;
                     if let Err(e) = store::save_identity_provider(&idp).await {
-                        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to update IDP: {e}"));
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("Failed to update IDP: {e}"),
+                        );
                     }
                     return redirect_response("/admin/identity-providers");
                 } else {
@@ -736,7 +913,10 @@ async fn handle_parameterized_route(
             let id = rest;
             if method == Method::DELETE {
                 let _ = store::delete_identity_provider(id).await;
-                return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .body(String::new())
+                    .unwrap();
             }
         }
     }
@@ -748,11 +928,16 @@ async fn handle_parameterized_route(
                 if let Ok(Some(hook)) = store::get_hook(id).await {
                     match crate::hooks::test_hook(&hook.script, &hook.trigger) {
                         Ok(outcome) => {
-                            let text = format!("Outcome: {:?}\nLogs: {:?}", outcome, outcome.log_messages);
-                            return html_response(views::hooks::render_test_result(&text, true).into_string());
+                            let text =
+                                format!("Outcome: {:?}\nLogs: {:?}", outcome, outcome.log_messages);
+                            return html_response(
+                                views::hooks::render_test_result(&text, true).into_string(),
+                            );
                         }
                         Err(e) => {
-                            return html_response(views::hooks::render_test_result(&e, false).into_string());
+                            return html_response(
+                                views::hooks::render_test_result(&e, false).into_string(),
+                            );
                         }
                     }
                 }
@@ -762,16 +947,28 @@ async fn handle_parameterized_route(
             if method == Method::GET {
                 if let Ok(Some(hook)) = store::get_hook(id).await {
                     let versions = store::list_hook_versions(id).await.unwrap_or_default();
-                    return views::hooks::render_hook_editor_page(session, Some(&hook), &versions).await;
+                    return views::hooks::render_hook_editor_page(session, Some(&hook), &versions)
+                        .await;
                 }
             } else if method == Method::POST {
                 let form = parse_form(body);
                 if let Ok(Some(mut hook)) = store::get_hook(id).await {
-                    let name = form_value(&form, "name").unwrap_or(&hook.name).trim().to_string();
-                    let trigger = form_value(&form, "trigger").unwrap_or(&hook.trigger).to_string();
-                    let priority: i32 = form_value(&form, "priority").and_then(|p| p.parse().ok()).unwrap_or(hook.priority);
-                    let enabled = form_value(&form, "enabled").map(|v| v == "true" || v == "on").unwrap_or(false);
-                    let script = form_value(&form, "script").unwrap_or(&hook.script).to_string();
+                    let name = form_value(&form, "name")
+                        .unwrap_or(&hook.name)
+                        .trim()
+                        .to_string();
+                    let trigger = form_value(&form, "trigger")
+                        .unwrap_or(&hook.trigger)
+                        .to_string();
+                    let priority: i32 = form_value(&form, "priority")
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(hook.priority);
+                    let enabled = form_value(&form, "enabled")
+                        .map(|v| v == "true" || v == "on")
+                        .unwrap_or(false);
+                    let script = form_value(&form, "script")
+                        .unwrap_or(&hook.script)
+                        .to_string();
 
                     let now = store::unix_now();
                     // Save previous version
@@ -804,7 +1001,10 @@ async fn handle_parameterized_route(
                 }
             } else if method == Method::DELETE {
                 let _ = store::delete_hook(id).await;
-                return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .body(String::new())
+                    .unwrap();
             }
         }
     }
@@ -813,11 +1013,15 @@ async fn handle_parameterized_route(
     if let Some(cred_id) = path.strip_prefix("/admin/account/passkeys/") {
         if method == Method::DELETE {
             if let Ok(Some(mut user)) = store::get_user(&session.user.id).await {
-                user.passkey_credentials.retain(|p| p.credential_id != cred_id);
+                user.passkey_credentials
+                    .retain(|p| p.credential_id != cred_id);
                 let _ = store::update_user(&user).await;
                 let _ = store::unindex_passkey_credential(cred_id).await;
             }
-            return Response::builder().status(StatusCode::OK).body(String::new()).unwrap();
+            return Response::builder()
+                .status(StatusCode::OK)
+                .body(String::new())
+                .unwrap();
         }
     }
 
@@ -876,8 +1080,18 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
 
     // Check Authorization: Bearer <jwt>
     if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = auth_hdr.strip_prefix("Bearer ").or_else(|| auth_hdr.strip_prefix("bearer ")) {
-            if let Ok(claims) = crate::service_client::verify_token_scoped(token, Some(&crate::get_issuer()), None, Some("access")).await {
+        if let Some(token) = auth_hdr
+            .strip_prefix("Bearer ")
+            .or_else(|| auth_hdr.strip_prefix("bearer "))
+        {
+            if let Ok(claims) = crate::service_client::verify_token_scoped(
+                token,
+                Some(&crate::get_issuer()),
+                None,
+                Some("access"),
+            )
+            .await
+            {
                 if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
                     if let Ok(Some(u)) = store::get_user(sub).await {
                         user_opt = Some(u);
@@ -912,7 +1126,9 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
                         if store::unix_now() <= session_rec.expires_at {
                             if let Ok(Some(u)) = store::get_user(&session_rec.user_id).await {
                                 user_opt = Some(u);
-                                csrf_token_opt = Some(store::sha256_hex(&format!("csrf:{val}"))[..24].to_string());
+                                csrf_token_opt = Some(
+                                    store::sha256_hex(&format!("csrf:{val}"))[..24].to_string(),
+                                );
                                 break;
                             }
                         }
@@ -938,7 +1154,10 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
 
     let is_super = user.superadmin;
     let memberships = store::list_user_tenants(&user.id).await.unwrap_or_default();
-    let is_admin = is_super || memberships.iter().any(|m| m.role == "owner" || m.role == "admin");
+    let is_admin = is_super
+        || memberships
+            .iter()
+            .any(|m| m.role == "owner" || m.role == "admin");
 
     if !is_admin {
         return Err(error_response(
@@ -1022,7 +1241,9 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
 
     let password_hash = match crate::service_client::hash_password(password).await {
         Ok(h) => h,
-        Err(e) => return views::bootstrap::render_bootstrap_page(Some(&format!("Hashing error: {e}"))),
+        Err(e) => {
+            return views::bootstrap::render_bootstrap_page(Some(&format!("Hashing error: {e}")));
+        }
     };
 
     let require_verification = crate::require_email_verification();
@@ -1051,7 +1272,9 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
     if crate::get_bootstrap_hook().is_some() {
         let boot = crate::hooks::execute_bootstrap_hook(&user).await;
         if let Some(reason) = &boot.deny_reason {
-            return views::bootstrap::render_bootstrap_page(Some(&format!("Bootstrap denied: {reason}")));
+            return views::bootstrap::render_bootstrap_page(Some(&format!(
+                "Bootstrap denied: {reason}"
+            )));
         }
         if boot.set_superadmin != Some(true) {
             return views::bootstrap::render_bootstrap_page(Some(
@@ -1082,7 +1305,11 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
         .collect::<String>();
     let tenant = Tenant {
         id: tenant_id.clone(),
-        name: if tenant_slug.is_empty() { "default".to_string() } else { tenant_slug },
+        name: if tenant_slug.is_empty() {
+            "default".to_string()
+        } else {
+            tenant_slug
+        },
         display_name: org_name.to_string(),
         status: "active".to_string(),
         created_at: store::unix_now(),
@@ -1101,8 +1328,12 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
         "bootstrap_completed",
         &user.id,
         &user.id,
-        &format!("Superadmin initialized: {} (status={})", user.email, user.status),
-    ).await;
+        &format!(
+            "Superadmin initialized: {} (status={})",
+            user.email, user.status
+        ),
+    )
+    .await;
 
     if require_verification {
         let verify_token = store::random_hex(32);
@@ -1120,14 +1351,16 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
             &user.id,
             &user.id,
             &store::hmac_email(&verify_token),
-        ).await;
+        )
+        .await;
         if crate::is_dev_mode() {
             crate::logger::info(
                 &format!("LID_VERIFY: {} {}", user.email, verify_token),
                 serde_json::json!({}),
             );
         }
-        crate::email::send_verification_email(&issuer, &user.email, &user.name, &verify_token).await;
+        crate::email::send_verification_email(&issuer, &user.email, &user.name, &verify_token)
+            .await;
         return views::bootstrap::render_bootstrap_pending_page(&user.email);
     }
 
@@ -1157,10 +1390,17 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
     let email = form_value(&form, "email").unwrap_or("").trim();
     let password = form_value(&form, "password").unwrap_or("");
     let return_to = form_value(&form, "return_to").unwrap_or("/admin");
-    let return_target = if return_to.is_empty() { "/admin" } else { return_to };
+    let return_target = if return_to.is_empty() {
+        "/admin"
+    } else {
+        return_to
+    };
 
     if email.is_empty() || password.is_empty() {
-        return views::login::render_login_page(Some("Please enter both email and password."), return_target);
+        return views::login::render_login_page(
+            Some("Please enter both email and password."),
+            return_target,
+        );
     }
 
     let user = match store::get_user_by_email(email).await {
@@ -1171,7 +1411,10 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
                 password,
                 "$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             ).await;
-            return views::login::render_login_page(Some("Invalid email or password."), return_target);
+            return views::login::render_login_page(
+                Some("Invalid email or password."),
+                return_target,
+            );
         }
     };
 
@@ -1180,7 +1423,10 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
             password,
             "$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         ).await;
-        return views::login::render_login_page(Some("This account is not active. Please contact an administrator."), return_target);
+        return views::login::render_login_page(
+            Some("This account is not active. Please contact an administrator."),
+            return_target,
+        );
     }
 
     // Check account lockout
@@ -1189,7 +1435,12 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
             password,
             "$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         ).await;
-        return views::login::render_login_page(Some("Account temporarily locked due to repeated failed login attempts. Please try again later."), return_target);
+        return views::login::render_login_page(
+            Some(
+                "Account temporarily locked due to repeated failed login attempts. Please try again later.",
+            ),
+            return_target,
+        );
     }
 
     // Verify password via password-hasher
@@ -1198,17 +1449,26 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
         _ => {
             let _ = store::record_failed_login(&user.id).await;
             let _ = store::log_audit("admin_login_failed", &user.id, &user.id, email).await;
-            return views::login::render_login_page(Some("Invalid email or password."), return_target);
+            return views::login::render_login_page(
+                Some("Invalid email or password."),
+                return_target,
+            );
         }
     }
 
     // Check admin permissions
     let is_super = user.superadmin;
     let memberships = store::list_user_tenants(&user.id).await.unwrap_or_default();
-    let is_admin = is_super || memberships.iter().any(|m| m.role == "owner" || m.role == "admin");
+    let is_admin = is_super
+        || memberships
+            .iter()
+            .any(|m| m.role == "owner" || m.role == "admin");
 
     if !is_admin {
-        return views::login::render_login_page(Some("Access denied: Administrator privileges required."), return_target);
+        return views::login::render_login_page(
+            Some("Access denied: Administrator privileges required."),
+            return_target,
+        );
     }
 
     // Check MFA
@@ -1252,12 +1512,19 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
     let mfa_token = form_value(&form, "mfa_token").unwrap_or("");
     let code = form_value(&form, "code").unwrap_or("").trim();
     let return_to = form_value(&form, "return_to").unwrap_or("/admin");
-    let return_target = if return_to.is_empty() { "/admin" } else { return_to };
+    let return_target = if return_to.is_empty() {
+        "/admin"
+    } else {
+        return_to
+    };
 
     let pending = match store::get_mfa_pending(mfa_token).await {
         Ok(Some(p)) if store::unix_now() <= p.expires_at => p,
         _ => {
-            return views::login::render_login_page(Some("MFA session expired. Please sign in again."), return_target);
+            return views::login::render_login_page(
+                Some("MFA session expired. Please sign in again."),
+                return_target,
+            );
         }
     };
 
@@ -1271,7 +1538,10 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
     if let Some(ref secret) = user.totp_secret {
         if let Some(step) = crate::totp::verify_totp_step(secret, code) {
             let replay_key = format!("totp_used:{}:{}", user.id, step);
-            if store::record_totp_used(&replay_key, 90).await.unwrap_or(true) {
+            if store::record_totp_used(&replay_key, 90)
+                .await
+                .unwrap_or(true)
+            {
                 verified = true;
             } else {
                 return views::login::render_mfa_prompt(
@@ -1287,17 +1557,27 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
     if !verified && !user.recovery_codes.is_empty() {
         // Check recovery code
         let normalized = code.trim().to_lowercase();
-        if user.recovery_codes.iter().any(|c| c.to_lowercase() == normalized) {
+        if user
+            .recovery_codes
+            .iter()
+            .any(|c| c.to_lowercase() == normalized)
+        {
             verified = true;
             let _ = store::update_user_rmw(&user.id, |u| {
                 u.recovery_codes.retain(|c| c.to_lowercase() != normalized);
                 Ok(true)
-            }).await;
+            })
+            .await;
         }
     }
 
     if !verified {
-        return views::login::render_mfa_prompt(&user.email, mfa_token, return_target, Some("Invalid authentication code. Please try again."));
+        return views::login::render_mfa_prompt(
+            &user.email,
+            mfa_token,
+            return_target,
+            Some("Invalid authentication code. Please try again."),
+        );
     }
 
     let _ = store::delete_mfa_pending(mfa_token).await;
@@ -1357,7 +1637,7 @@ async fn handle_admin_passkey_register_options(session: &AdminSession) -> Respon
             return json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("database error: {e}"),
-            )
+            );
         }
     };
 
@@ -1425,7 +1705,7 @@ async fn handle_admin_passkey_register_complete(
     let req: RegCompleteReq = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(e) => {
-            return json_error_response(StatusCode::BAD_REQUEST, &format!("invalid JSON: {e}"))
+            return json_error_response(StatusCode::BAD_REQUEST, &format!("invalid JSON: {e}"));
         }
     };
 
@@ -1435,13 +1715,13 @@ async fn handle_admin_passkey_register_complete(
             return json_error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid or expired registration token",
-            )
+            );
         }
         Err(e) => {
             return json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("database error: {e}"),
-            )
+            );
         }
     };
 
@@ -1466,7 +1746,7 @@ async fn handle_admin_passkey_register_complete(
             return json_error_response(
                 StatusCode::BAD_REQUEST,
                 &format!("registration verification failed: {e}"),
-            )
+            );
         }
     };
 
@@ -1480,7 +1760,7 @@ async fn handle_admin_passkey_register_complete(
             return json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("database error: {e}"),
-            )
+            );
         }
     };
 
@@ -1724,12 +2004,18 @@ mod tests {
     fn test_admin_passkey_json_responses() {
         let ok_res = json_response(StatusCode::OK, &serde_json::json!({ "token": "abc" }));
         assert_eq!(ok_res.status(), StatusCode::OK);
-        assert_eq!(ok_res.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            ok_res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
         assert_eq!(ok_res.body(), r#"{"token":"abc"}"#);
 
         let err_res = json_error_response(StatusCode::BAD_REQUEST, "invalid token");
         assert_eq!(err_res.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(err_res.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            err_res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
         let body: serde_json::Value = serde_json::from_str(err_res.body()).unwrap();
         assert_eq!(body["error"], "invalid_request");
         assert_eq!(body["error_description"], "invalid token");
@@ -1762,7 +2048,12 @@ mod tests {
             assert_eq!(res.status(), StatusCode::BAD_REQUEST);
             let body: serde_json::Value = serde_json::from_str(res.body()).unwrap();
             assert_eq!(body["error"], "invalid_request");
-            assert!(body["error_description"].as_str().unwrap().contains("invalid JSON"));
+            assert!(
+                body["error_description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("invalid JSON")
+            );
         });
     }
 
@@ -1808,10 +2099,24 @@ mod tests {
         let uris_raw = form_value(&form, "redirect_uris").unwrap();
         let post_logout_raw = form_value(&form, "post_logout_redirect_uris").unwrap();
 
-        let redirect_uris: Vec<String> = uris_raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-        let post_logout_uris: Vec<String> = post_logout_raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        let redirect_uris: Vec<String> = uris_raw
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        let post_logout_uris: Vec<String> = post_logout_raw
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
 
-        assert_eq!(redirect_uris, vec!["https://app.com/cb", "http://localhost:3000/cb"]);
-        assert_eq!(post_logout_uris, vec!["https://app.com/logout", "http://localhost:3000/"]);
+        assert_eq!(
+            redirect_uris,
+            vec!["https://app.com/cb", "http://localhost:3000/cb"]
+        );
+        assert_eq!(
+            post_logout_uris,
+            vec!["https://app.com/logout", "http://localhost:3000/"]
+        );
     }
 }

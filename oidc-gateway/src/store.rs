@@ -158,7 +158,11 @@ pub fn init_config_for_test(dev_mode: bool, client_secret_pepper: Option<&str>) 
             region_domains: None,
             region_internal_urls: None,
             issuer_url: None,
-            dev_mode: if dev_mode { Some("true".to_string()) } else { None },
+            dev_mode: if dev_mode {
+                Some("true".to_string())
+            } else {
+                None
+            },
             require_email_verification: None,
             allow_registration: None,
             bootstrap_hook: None,
@@ -406,7 +410,7 @@ pub struct RefreshEntry {
     pub issued_at: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OidcClient {
     pub client_id: String,
     pub client_secret: Option<String>,
@@ -430,6 +434,15 @@ pub struct OidcClient {
     /// The built-in `lid-admin` and `lid-default` clients are implicitly first-party.
     #[serde(default)]
     pub first_party: bool,
+    /// RFC 7591 / RFC 7523: Client authentication method (e.g. "client_secret_basic", "client_secret_post", "private_key_jwt", "none")
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
+    /// RFC 7523: Client public keys (JWKS) for private_key_jwt authentication
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+    /// RFC 9126: Whether this client requires pushed authorization requests
+    #[serde(default)]
+    pub require_pushed_authorization_requests: bool,
 }
 
 impl Default for OidcClient {
@@ -446,6 +459,9 @@ impl Default for OidcClient {
             backchannel_logout_session_required: false,
             id_token_signed_response_alg: None,
             first_party: false,
+            token_endpoint_auth_method: None,
+            jwks: None,
+            require_pushed_authorization_requests: false,
         }
     }
 }
@@ -859,6 +875,8 @@ const TTL_PASSKEY_CHALLENGE: u64 = 300; // 5 min
 const TTL_LOCKOUT: u64 = 3600; // 1 hour (generous buffer over default 15 min lock)
 const TTL_INVITATION: u64 = 86400 * 7; // 7 days
 const TTL_AUDIT: u64 = 86400 * 90; // 90 days
+pub const TTL_PAR_REQUEST: u64 = 90; // 90 seconds (RFC 9126 §2.2)
+pub const TTL_JTI: u64 = 300; // 5 min (replay prevention window)
 
 // ── lattice-db via localhost TCP (co-located service) ──
 
@@ -866,6 +884,91 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
 const LDB_TCP_PORT: u16 = 4080;
+
+#[cfg(test)]
+static TEST_KV: std::sync::Mutex<Option<std::collections::HashMap<String, (String, u64)>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn handle_test_ldb_request(
+    op: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut guard = TEST_KV.lock().unwrap();
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    let table = payload.get("table").and_then(|v| v.as_str()).unwrap_or("");
+    let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("");
+    let full_key = format!("{table}:{key}");
+
+    match op {
+        "get" => {
+            if let Some((val_b64, rev)) = map.get(&full_key) {
+                Ok(serde_json::json!({ "value": val_b64, "revision": rev }))
+            } else {
+                Err("not found".into())
+            }
+        }
+        "put" => {
+            let val_b64 = payload
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("missing value")?;
+            let rev = map.get(&full_key).map(|(_, r)| r + 1).unwrap_or(1);
+            map.insert(full_key, (val_b64.to_string(), rev));
+            Ok(serde_json::json!({ "ok": true, "revision": rev }))
+        }
+        "create" => {
+            if map.contains_key(&full_key) {
+                return Err("already exists".into());
+            }
+            let val_b64 = payload
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("missing value")?;
+            map.insert(full_key, (val_b64.to_string(), 1));
+            Ok(serde_json::json!({ "ok": true, "revision": 1 }))
+        }
+        "cas" => {
+            let expected_rev = payload
+                .get("revision")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let val_b64 = payload
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or("missing value")?;
+            if let Some((_, current_rev)) = map.get(&full_key) {
+                if *current_rev != expected_rev {
+                    return Err("revision mismatch".into());
+                }
+            } else if expected_rev != 0 {
+                return Err("revision mismatch".into());
+            }
+            let new_rev = expected_rev + 1;
+            map.insert(full_key, (val_b64.to_string(), new_rev));
+            Ok(serde_json::json!({ "ok": true, "revision": new_rev }))
+        }
+        "delete" => {
+            map.remove(&full_key);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        "exists" => {
+            let exists = map.contains_key(&full_key);
+            Ok(serde_json::json!({ "exists": exists }))
+        }
+        "keys" => {
+            let prefix = format!("{table}:");
+            let mut keys = Vec::new();
+            for k in map.keys() {
+                if let Some(stripped) = k.strip_prefix(&prefix) {
+                    keys.push(stripped.to_string());
+                }
+            }
+            Ok(serde_json::json!({ "keys": keys, "next_cursor": "" }))
+        }
+        _ => Err(format!("unsupported test op {op}")),
+    }
+}
 
 /// Send a request to lattice-db via localhost TCP.
 /// Wire protocol:
@@ -875,6 +978,10 @@ pub(crate) async fn ldb_request(
     op: &str,
     payload: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    #[cfg(test)]
+    {
+        return handle_test_ldb_request(op, payload);
+    }
     // Build payload with consistency context.
     let mut payload = payload.clone();
 
@@ -893,7 +1000,8 @@ pub(crate) async fn ldb_request(
     let payload_bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;
 
     // Direct localhost TCP loopback to co-located storage-service (127.0.0.1:4080)
-    let val: serde_json::Value = try_ldb_tcp(op, &payload_bytes).await
+    let val: serde_json::Value = try_ldb_tcp(op, &payload_bytes)
+        .await
         .map_err(|e| format!("ldb_request error on {op} (tcp): {e}"))?;
 
     if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
@@ -1003,9 +1111,8 @@ async fn try_ldb_tcp(op: &str, body: &[u8]) -> Result<serde_json::Value, String>
         }
     }
 
-    let (in_stream, out_stream, socket) = streams.ok_or_else(|| {
-        format!("tcp connect failed after retries: {last_err}")
-    })?;
+    let (in_stream, out_stream, socket) =
+        streams.ok_or_else(|| format!("tcp connect failed after retries: {last_err}"))?;
 
     // Write request frame: [4-byte total_len] [1-byte op_len] [op bytes] [payload]
     let op_bytes = op.as_bytes();
@@ -1058,8 +1165,8 @@ async fn try_ldb_tcp(op: &str, body: &[u8]) -> Result<serde_json::Value, String>
     let status_code = u16::from_be_bytes([buf[0], buf[1]]);
     let resp_payload = &buf[2..];
 
-    let val: serde_json::Value = serde_json::from_slice(resp_payload)
-        .map_err(|e| format!("parse response: {e}"))?;
+    let val: serde_json::Value =
+        serde_json::from_slice(resp_payload).map_err(|e| format!("parse response: {e}"))?;
 
     if status_code != 0 {
         if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
@@ -1839,7 +1946,12 @@ pub async fn delete_client(client_id: &str) -> Result<(), String> {
 }
 
 pub async fn save_registration_token(client_id: &str, token_hash: &str) -> Result<(), String> {
-    kv_set(&clients_store(), &format!("reg_token:{client_id}"), &token_hash.to_string()).await
+    kv_set(
+        &clients_store(),
+        &format!("reg_token:{client_id}"),
+        &token_hash.to_string(),
+    )
+    .await
 }
 
 pub async fn get_registration_token(client_id: &str) -> Result<Option<String>, String> {
@@ -1848,6 +1960,49 @@ pub async fn get_registration_token(client_id: &str) -> Result<Option<String>, S
 
 pub async fn delete_registration_token(client_id: &str) -> Result<(), String> {
     kv_delete(&clients_store(), &format!("reg_token:{client_id}")).await
+}
+
+// ── RFC 9126: Pushed Authorization Requests (PAR) ───────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PushedAuthRequest {
+    pub client_id: String,
+    pub parameters: std::collections::HashMap<String, String>,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+pub async fn save_pushed_auth_request(
+    request_uri: &str,
+    req: &PushedAuthRequest,
+    ttl: u64,
+) -> Result<(), String> {
+    kv_set_ttl(&sessions_store(), &format!("par:{request_uri}"), req, ttl).await
+}
+
+pub async fn get_pushed_auth_request(
+    request_uri: &str,
+) -> Result<Option<PushedAuthRequest>, String> {
+    kv_get(&sessions_store(), &format!("par:{request_uri}")).await
+}
+
+pub async fn delete_pushed_auth_request(request_uri: &str) -> Result<(), String> {
+    kv_delete(&sessions_store(), &format!("par:{request_uri}")).await
+}
+
+// ── JTI Replay Prevention (DPoP / Client Assertion) ─────────
+
+pub async fn check_and_record_jti(jti: &str, ttl: u64) -> Result<(), String> {
+    let key = format!("jti:{jti}");
+    let store_name = sessions_store();
+    if kv_get::<serde_json::Value>(&store_name, &key)
+        .await?
+        .is_some()
+    {
+        return Err("replay detected".into());
+    }
+    let marker = serde_json::json!({ "used_at": unix_now() });
+    kv_set_ttl(&store_name, &key, &marker, ttl).await
 }
 
 // ── Tenant operations ───────────────────────────────────────
@@ -2159,6 +2314,9 @@ pub async fn ensure_default_client() -> Result<(), String> {
         backchannel_logout_session_required: false,
         id_token_signed_response_alg: None,
         first_party: true,
+        token_endpoint_auth_method: Some("none".to_string()),
+        jwks: None,
+        require_pushed_authorization_requests: false,
     };
     kv_set(&clients_store(), &format!("client:{default_id}"), &client).await
 }
@@ -2206,6 +2364,9 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
         backchannel_logout_session_required: false,
         id_token_signed_response_alg: None,
         first_party: true,
+        token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+        jwks: None,
+        require_pushed_authorization_requests: false,
     };
     kv_set(&clients_store(), &format!("client:{admin_id}"), &client).await
 }
@@ -2408,13 +2569,7 @@ pub async fn save_account_session(token: &str, session: &AccountSession) -> Resu
     } else {
         TTL_ACCOUNT_SESSION
     };
-    kv_set_ttl(
-        &sessions_store(),
-        &format!("acct:{hashed}"),
-        session,
-        ttl,
-    )
-    .await
+    kv_set_ttl(&sessions_store(), &format!("acct:{hashed}"), session, ttl).await
 }
 
 pub async fn get_account_session(token: &str) -> Result<Option<AccountSession>, String> {
@@ -2452,13 +2607,7 @@ pub struct IdpSession {
 pub async fn save_idp_session(token: &str, session: &IdpSession) -> Result<(), String> {
     let hashed = sha256_hex(token);
     let ttl = get_idp_session_ttl().await;
-    kv_set_ttl(
-        &sessions_store(),
-        &format!("idp:{hashed}"),
-        session,
-        ttl,
-    )
-    .await
+    kv_set_ttl(&sessions_store(), &format!("idp:{hashed}"), session, ttl).await
 }
 
 pub async fn get_idp_session(token: &str) -> Result<Option<IdpSession>, String> {

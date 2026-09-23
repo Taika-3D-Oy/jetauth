@@ -398,12 +398,20 @@ pub fn merge_themes(base: ClientTheme, override_theme: Option<ClientTheme>) -> C
 }
 
 /// Resolve the full effective theme for a client theme or fallback.
-pub fn resolve_effective_theme(theme_opt: Option<ClientTheme>, global_settings: &RuntimeSettings) -> ClientTheme {
+pub fn resolve_effective_theme(
+    theme_opt: Option<ClientTheme>,
+    global_settings: &RuntimeSettings,
+) -> ClientTheme {
     // 1. Determine base preset: client's preset -> global's preset -> fallback
     let preset_name = theme_opt
         .as_ref()
         .and_then(|t| t.theme_preset.as_deref())
-        .or_else(|| global_settings.default_theme.as_ref().and_then(|t| t.theme_preset.as_deref()))
+        .or_else(|| {
+            global_settings
+                .default_theme
+                .as_ref()
+                .and_then(|t| t.theme_preset.as_deref())
+        })
         .unwrap_or("taika-dark");
 
     let base = apply_preset(preset_name);
@@ -475,23 +483,41 @@ pub fn render_head_tags(theme: &ClientTheme) -> String {
 /// Generate CSS variable values and styles.
 pub fn render_css_variables(theme: &ClientTheme) -> String {
     let primary = theme.primary_color.as_deref().unwrap_or("#10b981");
-    let primary_hover = theme
-        .primary_hover_color
+    let primary_hover = theme.primary_hover_color.as_deref().unwrap_or("#059669");
+    let bg = theme
+        .background_color
         .as_deref()
-        .unwrap_or("#059669");
-    let bg = theme.background_color.as_deref().unwrap_or("linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)");
-    let card_bg = theme.card_background.as_deref().unwrap_or("rgba(15, 23, 42, 0.75)");
-    let card_border = theme.card_border.as_deref().unwrap_or("1px solid rgba(255, 255, 255, 0.12)");
-    let card_shadow = theme.card_shadow.as_deref().unwrap_or("0 25px 50px -12px rgba(0, 0, 0, 0.5)");
+        .unwrap_or("linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)");
+    let card_bg = theme
+        .card_background
+        .as_deref()
+        .unwrap_or("rgba(15, 23, 42, 0.75)");
+    let card_border = theme
+        .card_border
+        .as_deref()
+        .unwrap_or("1px solid rgba(255, 255, 255, 0.12)");
+    let card_shadow = theme
+        .card_shadow
+        .as_deref()
+        .unwrap_or("0 25px 50px -12px rgba(0, 0, 0, 0.5)");
     let card_blur = theme.card_backdrop_blur.as_deref().unwrap_or("20px");
     let text = theme.text_color.as_deref().unwrap_or("#f8fafc");
     let text_muted = theme.text_muted_color.as_deref().unwrap_or("#94a3b8");
-    let input_bg = theme.input_background.as_deref().unwrap_or("rgba(30, 41, 59, 0.6)");
-    let input_border = theme.input_border_color.as_deref().unwrap_or("rgba(255, 255, 255, 0.16)");
+    let input_bg = theme
+        .input_background
+        .as_deref()
+        .unwrap_or("rgba(30, 41, 59, 0.6)");
+    let input_border = theme
+        .input_border_color
+        .as_deref()
+        .unwrap_or("rgba(255, 255, 255, 0.16)");
     let input_text = theme.input_text_color.as_deref().unwrap_or("#f8fafc");
     let button_text = theme.button_text_color.as_deref().unwrap_or("#ffffff");
     let radius = theme.border_radius.as_deref().unwrap_or("14px");
-    let font_family = theme.font_family.as_deref().unwrap_or("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif");
+    let font_family = theme
+        .font_family
+        .as_deref()
+        .unwrap_or("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif");
 
     let mut css = format!(
         r#":root {{
@@ -606,10 +632,7 @@ pub fn render_footer(theme: &ClientTheme, extra_links: Option<&str>) -> String {
         return String::new();
     }
 
-    format!(
-        r#"<p class="footer">{}</p>"#,
-        parts.join(" · ")
-    )
+    format!(r#"<p class="footer">{}</p>"#, parts.join(" · "))
 }
 
 /// Darken a hex color by ~15% for hover states.
@@ -642,7 +665,10 @@ mod tests {
         assert_eq!(preset.app_name, "Taika ID");
         assert_eq!(preset.primary_color, Some("#10b981".to_string()));
         assert_eq!(preset.border_radius, Some("14px".to_string()));
-        assert_eq!(preset.powered_by_text, Some("Powered by Taika ID".to_string()));
+        assert_eq!(
+            preset.powered_by_text,
+            Some("Powered by Taika ID".to_string())
+        );
     }
 
     #[test]

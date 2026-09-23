@@ -1,7 +1,7 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::store::{self, OidcClient};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_clients_page(session: &AdminSession) -> Response<String> {
     let clients = store::list_clients().await.unwrap_or_default();
@@ -518,5 +518,10 @@ pub async fn render_client_detail_page(
         }
     };
 
-    render_layout(session, "clients", &format!("Client: {}", client.name), content)
+    render_layout(
+        session,
+        "clients",
+        &format!("Client: {}", client.name),
+        content,
+    )
 }

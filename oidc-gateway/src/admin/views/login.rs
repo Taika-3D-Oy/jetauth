@@ -1,8 +1,12 @@
 use http::{Response, StatusCode};
-use maud::{html, DOCTYPE};
+use maud::{DOCTYPE, html};
 
 pub fn render_login_page(error: Option<&str>, return_to: &str) -> Response<String> {
-    let return_target = if return_to.is_empty() { "/admin" } else { return_to };
+    let return_target = if return_to.is_empty() {
+        "/admin"
+    } else {
+        return_to
+    };
     let markup = html! {
         (DOCTYPE)
         html lang="en" {
@@ -58,8 +62,17 @@ pub fn render_login_page(error: Option<&str>, return_to: &str) -> Response<Strin
         .unwrap()
 }
 
-pub fn render_mfa_prompt(email: &str, mfa_token: &str, return_to: &str, error: Option<&str>) -> Response<String> {
-    let return_target = if return_to.is_empty() { "/admin" } else { return_to };
+pub fn render_mfa_prompt(
+    email: &str,
+    mfa_token: &str,
+    return_to: &str,
+    error: Option<&str>,
+) -> Response<String> {
+    let return_target = if return_to.is_empty() {
+        "/admin"
+    } else {
+        return_to
+    };
     let markup = html! {
         (DOCTYPE)
         html lang="en" {

@@ -1,6 +1,6 @@
-use http::{Response, StatusCode};
-use maud::{html, Markup, DOCTYPE};
 use crate::store::{Tenant, User};
+use http::{Response, StatusCode};
+use maud::{DOCTYPE, Markup, html};
 
 #[derive(Clone, Debug)]
 pub struct AdminSession {
@@ -23,7 +23,12 @@ pub fn render_layout(
     } else {
         session.user.email.clone()
     };
-    let initial = user_name.chars().next().unwrap_or('A').to_uppercase().to_string();
+    let initial = user_name
+        .chars()
+        .next()
+        .unwrap_or('A')
+        .to_uppercase()
+        .to_string();
 
     let markup = html! {
         (DOCTYPE)

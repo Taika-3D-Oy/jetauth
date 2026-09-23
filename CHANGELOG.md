@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-23
+
+### Added
+
+- **RFC 9126 Pushed Authorization Requests (PAR)**:
+  - Added `POST /connect/par` (with `/oauth/par` and `/as/par` aliases) allowing clients to push authorization parameters directly via authenticated backchannel.
+  - Enforced single-use `urn:ietf:params:oauth:request_uri:<hex>` with 90-second TTL.
+  - Stripped client credentials (`client_secret`, `client_assertion`) before persisting parameters to the KV store.
+  - Updated `/authorize` endpoint to resolve `request_uri`, atomically consume/delete upon retrieval, and enforce `client.require_pushed_authorization_requests`.
+- **RFC 9449 Demonstrating Proof-of-Possession (DPoP)**:
+  - Added DPoP proof validation supporting RS256 and ES256 key types, verifying header structure, public JWK, HTTP method (`htm`), target URI (`htu`), freshness (`iat` within ±300s window), and replay prevention via atomic `jti` tracking.
+  - Bound access tokens cryptographically to client key thumbprints (`"cnf": { "jkt": "<thumbprint>" }`) and returned `"token_type": "DPoP"`.
+  - Added sender-constraining on `/userinfo` supporting `Authorization: DPoP <token>` with access token hash (`ath`) verification and thumbprint matching.
+  - Advertised `"dpop_signing_alg_values_supported": ["RS256", "ES256"]` in discovery metadata.
+- **RFC 7523 JSON Web Token (JWT) Profile for Client Authentication (`private_key_jwt`)**:
+  - Added asymmetric `private_key_jwt` client authentication across `/token`, `/connect/par`, `/token/revoke`, and `/token/introspect`.
+  - Validated client assertion claims (`iss == client_id`, `sub == client_id`, `aud`, `exp`, `nbf`, single-use `jti`) against registered public keys in `client.jwks` (RS256 and ES256).
+  - Enforced RFC 6749 §2.3 mutual exclusivity across `client_secret_basic`, `client_secret_post`, and `private_key_jwt`.
+- **RFC 7638 JSON Web Key (JWK) Thumbprints**:
+  - Implemented canonical JWK thumbprint computation adhering to RFC 7638 member ordering for RSA (`e`, `kty`, `n`) and EC P-256 (`crv`, `kty`, `x`, `y`), validated against RFC 7638 §3.1 test vectors.
+- **Dynamic Registration & Management Updates**:
+  - Extended dynamic client registration (RFC 7591) and management API to accept `token_endpoint_auth_method`, `jwks`, and `require_pushed_authorization_requests`.
+- **In-Memory KV Test Harness**:
+  - Implemented standalone in-memory KV fallback for unit and integration testing under `cargo test` without requiring live WASI socket TCP daemons.
+
 ## [1.11.0] - 2026-09-23
 
 ### Added

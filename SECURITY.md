@@ -54,12 +54,14 @@ The application layer implements zero-trust identity verification, cryptographic
 - **PKCE (Proof Key for Code Exchange)**: Mandatory for all public and single-page application (SPA) authorization flows using `code_challenge_method=S256` (RFC 7636).
 - **Password Hashing**: Supported via `Argon2id` (and PBKDF2 fallback) with per-user cryptographic salts and server-side secret pepper.
 
-### 2.3 Token Security & Lifecycle
+### 2.3 Token Security, Sender-Constraining & Client Authentication
 - **Access Tokens**: Short-lived (default: 15 minutes) signed JSON Web Tokens (RS256 / ES256).
 - **Refresh Token Rotation**:
   - Every refresh token exchange issues a new refresh token and invalidates the old one.
   - If an invalidated refresh token is ever reused (indicating token theft), Lattice-ID immediately revokes the **entire token family** and terminates the user's active session.
-- **DPoP (Demonstrating Proof-of-Possession)**: Planned under RFC 9449 on the roadmap to bind tokens cryptographically to client private keys, mitigating token replay attacks.
+- **DPoP (Demonstrating Proof-of-Possession, RFC 9449)**: Binds access tokens cryptographically to client key thumbprints (`cnf: { jkt }`) and sender-constrains requests on `/token` and `/userinfo` with single-use `jti` replay prevention and `ath` access token hash verification.
+- **Pushed Authorization Requests (PAR, RFC 9126)**: Allows confidential and public clients to push authorization parameters directly via authenticated backchannel (`POST /connect/par`), returning a short-lived (90s), single-use `request_uri`.
+- **Private Key JWT Authentication (RFC 7523)**: Supports asymmetric key authentication (`private_key_jwt` with RS256/ES256) across token, PAR, revocation, and introspection endpoints, eliminating the need for shared static secrets.
 
 ### 2.4 Semantic Audit Trail (`lid-audit`)
 Every administrative action, authentication attempt, and client modification is recorded to an append-only NATS JetStream stream named `lid-audit`:

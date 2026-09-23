@@ -1,7 +1,7 @@
-use maud::html;
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::store;
 use http::Response;
+use maud::html;
 
 pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
     let settings = store::get_runtime_settings().await;

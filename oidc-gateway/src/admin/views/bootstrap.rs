@@ -1,5 +1,5 @@
 use http::{Response, StatusCode};
-use maud::{html, DOCTYPE};
+use maud::{DOCTYPE, html};
 
 pub fn render_bootstrap_page(error: Option<&str>) -> Response<String> {
     let markup = html! {
@@ -92,4 +92,3 @@ pub fn render_bootstrap_pending_page(email: &str) -> Response<String> {
         .body(markup.into_string())
         .unwrap()
 }
-

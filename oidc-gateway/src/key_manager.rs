@@ -248,7 +248,8 @@ pub async fn get_public_key() -> Result<String, String> {
         "kid": rsa_stored.kid,
         "n": rsa_stored.n,
         "e": rsa_stored.e,
-    }).to_string())
+    })
+    .to_string())
 }
 
 pub async fn get_public_keys() -> Result<String, String> {

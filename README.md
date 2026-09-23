@@ -6,15 +6,23 @@ Runs as a single wasmCloud WorkloadDeployment with [lattice-db](https://github.c
 
 ## Status
 
-**v1.8.0**
+**v1.12.0**
 
-- Dynamic theming engine with 6 trendy built-in presets (`taika-dark`, `taika-light`, `glassmorphic`, `cyberpunk`, `minimal-noir`, `neo-brutalist`) and complete white-labeling
-- Built-in Server-Side Rendered (SSR) Maud + HTMX Admin Panel embedded directly in `oidc-gateway` at `/admin`
-- Full OIDC/OAuth2 compliance (authorization code + PKCE, client credentials, device flow, refresh token rotation)
+- Full OIDC Core & OAuth 2.0 conformance (authorization code + PKCE S256, client credentials, refresh token family rotation, device flow)
+- Advanced OAuth 2.0 Security Profiles:
+  - **RFC 9126 Pushed Authorization Requests (PAR)** (`/connect/par`, `/oauth/par`, `/as/par`) with 90s single-use `request_uri` and client enforcement policy
+  - **RFC 9449 Demonstrating Proof-of-Possession (DPoP)** sender-constrained access tokens (`cnf: { jkt }`) and proof validation on token and resource (`/userinfo`) endpoints
+  - **RFC 7523 `private_key_jwt`** asymmetric client authentication (RS256, ES256) across all token, PAR, revocation, and introspection endpoints
+  - **RFC 7638 JWK Thumbprint** computation for public key binding
+  - **RFC 7591 / RFC 7592 Dynamic Client Registration & Management** with configurable policy (`disabled`, `protected`, `open`) and Registration Access Tokens
+  - **RFC 9207 Issuer Identifier in Authorization Response** (`iss`)
+  - **RFC 8414 OAuth 2.0 Authorization Server Metadata** (`/.well-known/oauth-authorization-server`)
+  - **RFC 7009 Token Revocation** with authenticated client ownership verification
 - Security hardening: CSRF protection, refresh token absolute lifetime cap, account lockout, rate limiting, consent screen
+- Dedicated RP-initiated logout (`post_logout_redirect_uris`) and Backchannel logout (RFC 8613)
+- Built-in Server-Side Rendered (SSR) Maud + HTMX Admin Panel embedded directly in `oidc-gateway` at `/admin`
+- Dynamic theming engine with 6 trendy built-in presets (`taika-dark`, `taika-light`, `glassmorphic`, `cyberpunk`, `minimal-noir`, `neo-brutalist`) and complete white-labeling: [THEMING.md](THEMING.md)
 - GDPR: user data export (`GET /api/users/:id/export`) and erasure (`DELETE /api/users/:id`)
-- Backchannel logout (RFC 8613), RP-initiated logout (OIDC RP-Initiated Logout 1.0)
-- Dynamic theming, trendy modern presets, & full white-labeling: [THEMING.md](THEMING.md)
 - Multi-region design: [MULTI_REGION.md](MULTI_REGION.md)
 - WASI 0.3 / wasmCloud ≥ 2.7.0 Component Model async I/O compatibility (`wasip3 0.7`, `wit-bindgen 0.57`)
 

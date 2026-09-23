@@ -1,14 +1,17 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::{format_timestamp, relative_time};
 use crate::store::{self, AuditEvent};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_dashboard(session: &AdminSession) -> Response<String> {
     let tenants_count = session.tenants.len();
     let users_count = store::list_users().await.map(|u| u.len()).unwrap_or(0);
     let clients_count = store::list_clients().await.map(|c| c.len()).unwrap_or(0);
-    let idps_count = store::list_identity_providers().await.map(|i| i.len()).unwrap_or(0);
+    let idps_count = store::list_identity_providers()
+        .await
+        .map(|i| i.len())
+        .unwrap_or(0);
 
     let audit_events = store::list_audit_events(None, None, None, None, None, 10)
         .await

@@ -157,6 +157,10 @@ struct ClientRegistrationReq {
     #[serde(default)]
     token_endpoint_auth_method: Option<String>,
     #[serde(default)]
+    jwks: Option<serde_json::Value>,
+    #[serde(default)]
+    require_pushed_authorization_requests: Option<bool>,
+    #[serde(default)]
     backchannel_logout_uri: Option<String>,
     #[serde(default)]
     backchannel_logout_session_required: Option<bool>,
@@ -196,7 +200,11 @@ pub async fn register_client(
 
     for uri in &redirect_uris {
         if let Err(e) = validate_redirect_uri(uri) {
-            return Ok(reg_error(StatusCode::BAD_REQUEST, "invalid_redirect_uri", e));
+            return Ok(reg_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_redirect_uri",
+                e,
+            ));
         }
     }
 
@@ -251,6 +259,16 @@ pub async fn register_client(
         .unwrap_or_else(|| "client_secret_basic".to_string());
     let is_confidential = match auth_method.as_str() {
         "client_secret_basic" | "client_secret_post" => true,
+        "private_key_jwt" => {
+            if req.jwks.is_none() {
+                return Ok(reg_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_metadata",
+                    "jwks parameter is required when token_endpoint_auth_method is private_key_jwt",
+                ));
+            }
+            false
+        }
         "none" => false,
         other => {
             return Ok(reg_error(
@@ -298,6 +316,11 @@ pub async fn register_client(
             .backchannel_logout_session_required
             .unwrap_or(false),
         id_token_signed_response_alg: id_token_alg,
+        token_endpoint_auth_method: Some(auth_method.clone()),
+        jwks: req.jwks,
+        require_pushed_authorization_requests: req
+            .require_pushed_authorization_requests
+            .unwrap_or(false),
     };
 
     if let Err(e) = store::save_client(&client).await {
@@ -320,7 +343,13 @@ pub async fn register_client(
     }
     crate::service_client::replicate_to_regions("put", "client", &client_id, Some(&sync_val)).await;
 
-    let _ = store::log_audit("client_registered", "dynamic_registration", &client_id, &client_name).await;
+    let _ = store::log_audit(
+        "client_registered",
+        "dynamic_registration",
+        &client_id,
+        &client_name,
+    )
+    .await;
 
     let registration_client_uri = format!("{issuer}/connect/register/{client_id}");
     let issued_at = std::time::SystemTime::now()
@@ -344,6 +373,12 @@ pub async fn register_client(
 
     if let Some(secret) = raw_secret {
         resp_json["client_secret"] = serde_json::json!(secret);
+    }
+    if let Some(jwks) = &client.jwks {
+        resp_json["jwks"] = jwks.clone();
+    }
+    if client.require_pushed_authorization_requests {
+        resp_json["require_pushed_authorization_requests"] = serde_json::json!(true);
     }
 
     Ok(Response::builder()
@@ -383,14 +418,18 @@ pub async fn read_client(
         }
     };
 
-    let auth_method = if client.client_secret.is_some() {
-        "client_secret_basic"
-    } else {
-        "none"
-    };
+    let auth_method =
+        client
+            .token_endpoint_auth_method
+            .as_deref()
+            .unwrap_or(if client.client_secret.is_some() {
+                "client_secret_basic"
+            } else {
+                "none"
+            });
 
     let registration_client_uri = format!("{issuer}/connect/register/{client_id}");
-    let resp_json = serde_json::json!({
+    let mut resp_json = serde_json::json!({
         "client_id": client.client_id,
         "client_name": client.name,
         "redirect_uris": client.redirect_uris,
@@ -400,6 +439,13 @@ pub async fn read_client(
         "token_endpoint_auth_method": auth_method,
         "registration_client_uri": registration_client_uri,
     });
+
+    if let Some(jwks) = &client.jwks {
+        resp_json["jwks"] = jwks.clone();
+    }
+    if client.require_pushed_authorization_requests {
+        resp_json["require_pushed_authorization_requests"] = serde_json::json!(true);
+    }
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -460,7 +506,11 @@ pub async fn update_client(
         }
         for uri in &uris {
             if let Err(e) = validate_redirect_uri(uri) {
-                return Ok(reg_error(StatusCode::BAD_REQUEST, "invalid_redirect_uri", e));
+                return Ok(reg_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_redirect_uri",
+                    e,
+                ));
             }
         }
         client.redirect_uris = uris;
@@ -524,6 +574,40 @@ pub async fn update_client(
         };
     }
 
+    if let Some(auth_m) = req.token_endpoint_auth_method {
+        match auth_m.as_str() {
+            "client_secret_basic" | "client_secret_post" => {
+                client.token_endpoint_auth_method = Some(auth_m);
+            }
+            "private_key_jwt" => {
+                if req.jwks.is_none() && client.jwks.is_none() {
+                    return Ok(reg_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_client_metadata",
+                        "jwks parameter is required when token_endpoint_auth_method is private_key_jwt",
+                    ));
+                }
+                client.token_endpoint_auth_method = Some(auth_m);
+            }
+            "none" => {
+                client.token_endpoint_auth_method = Some(auth_m);
+            }
+            other => {
+                return Ok(reg_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_metadata",
+                    &format!("Unsupported token_endpoint_auth_method: {other}"),
+                ));
+            }
+        }
+    }
+    if let Some(jwks) = req.jwks {
+        client.jwks = Some(jwks);
+    }
+    if let Some(req_par) = req.require_pushed_authorization_requests {
+        client.require_pushed_authorization_requests = req_par;
+    }
+
     if let Err(e) = store::save_client(&client).await {
         return Ok(reg_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -538,16 +622,26 @@ pub async fn update_client(
     }
     crate::service_client::replicate_to_regions("put", "client", client_id, Some(&sync_val)).await;
 
-    let _ = store::log_audit("client_updated", "dynamic_registration", client_id, &client.name).await;
+    let _ = store::log_audit(
+        "client_updated",
+        "dynamic_registration",
+        client_id,
+        &client.name,
+    )
+    .await;
 
-    let auth_method = if client.client_secret.is_some() {
-        "client_secret_basic"
-    } else {
-        "none"
-    };
+    let auth_method =
+        client
+            .token_endpoint_auth_method
+            .as_deref()
+            .unwrap_or(if client.client_secret.is_some() {
+                "client_secret_basic"
+            } else {
+                "none"
+            });
     let registration_client_uri = format!("{issuer}/connect/register/{client_id}");
 
-    let resp_json = serde_json::json!({
+    let mut resp_json = serde_json::json!({
         "client_id": client.client_id,
         "client_name": client.name,
         "redirect_uris": client.redirect_uris,
@@ -557,6 +651,13 @@ pub async fn update_client(
         "token_endpoint_auth_method": auth_method,
         "registration_client_uri": registration_client_uri,
     });
+
+    if let Some(jwks) = &client.jwks {
+        resp_json["jwks"] = jwks.clone();
+    }
+    if client.require_pushed_authorization_requests {
+        resp_json["require_pushed_authorization_requests"] = serde_json::json!(true);
+    }
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -606,7 +707,13 @@ pub async fn delete_client(
     let _ = store::delete_registration_token(client_id).await;
     crate::service_client::replicate_to_regions("delete", "client", client_id, None).await;
 
-    let _ = store::log_audit("client_deleted", "dynamic_registration", client_id, &existing.name).await;
+    let _ = store::log_audit(
+        "client_deleted",
+        "dynamic_registration",
+        client_id,
+        &existing.name,
+    )
+    .await;
 
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -620,8 +727,14 @@ mod tests {
 
     #[test]
     fn test_extract_bearer_token() {
-        assert_eq!(extract_bearer_token(Some("Bearer token123")), Some("token123"));
-        assert_eq!(extract_bearer_token(Some("bearer token123")), Some("token123"));
+        assert_eq!(
+            extract_bearer_token(Some("Bearer token123")),
+            Some("token123")
+        );
+        assert_eq!(
+            extract_bearer_token(Some("bearer token123")),
+            Some("token123")
+        );
         assert_eq!(extract_bearer_token(Some("Basic dXNlcjpwYXNz")), None);
         assert_eq!(extract_bearer_token(None), None);
     }
@@ -677,12 +790,9 @@ mod tests {
     #[test]
     fn test_register_client_gating_disabled_returns_403() {
         crate::store::init_config_for_test(false, None);
-        let resp = futures::executor::block_on(register_client(
-            None,
-            b"{}",
-            "https://auth.example.com",
-        ))
-        .unwrap();
+        let resp =
+            futures::executor::block_on(register_client(None, b"{}", "https://auth.example.com"))
+                .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let body: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
         assert_eq!(body["error"], "access_denied");
@@ -732,10 +842,12 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
         assert_eq!(body["error"], "invalid_redirect_uri");
-        assert!(body["error_description"]
-            .as_str()
-            .unwrap()
-            .contains("fragment"));
+        assert!(
+            body["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("fragment")
+        );
     }
 
     #[test]
@@ -755,10 +867,12 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
         assert_eq!(body["error"], "invalid_client_metadata");
-        assert!(body["error_description"]
-            .as_str()
-            .unwrap()
-            .contains("grant_type"));
+        assert!(
+            body["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("grant_type")
+        );
     }
 
     #[test]

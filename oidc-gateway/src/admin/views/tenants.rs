@@ -1,8 +1,8 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::{format_timestamp, relative_time, render_status_badge};
 use crate::store::{self, Membership, Tenant, User};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_tenants_page(session: &AdminSession) -> Response<String> {
     let tenants = store::list_tenants().await.unwrap_or_default();
@@ -178,7 +178,12 @@ pub async fn render_tenant_detail_page(
         }
     };
 
-    render_layout(session, "tenants", &format!("Tenant: {}", tenant.display_name), content)
+    render_layout(
+        session,
+        "tenants",
+        &format!("Tenant: {}", tenant.display_name),
+        content,
+    )
 }
 
 pub fn render_members_table(tenant_id: &str, members: &[(Membership, User)]) -> Markup {

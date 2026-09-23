@@ -1,8 +1,8 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::{format_timestamp, relative_time, render_status_badge};
 use crate::store::{self, PasskeyCredential, User};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_users_page(session: &AdminSession) -> Response<String> {
     let users = store::list_users().await.unwrap_or_default();

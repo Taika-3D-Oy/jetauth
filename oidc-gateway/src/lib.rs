@@ -18,8 +18,10 @@ mod account;
 pub mod admin;
 mod authorize;
 mod backchannel;
+pub mod client_auth;
 mod device;
 mod discovery;
+pub mod dpop;
 mod email;
 mod google;
 mod hooks;
@@ -32,6 +34,7 @@ mod login;
 mod management;
 #[cfg(test)]
 mod management_tests;
+pub mod par;
 mod passkeys;
 mod region_authority;
 mod registration;
@@ -181,7 +184,10 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
             let mut offset = 0;
             while offset < bytes.len() {
                 let end = (offset + 4096).min(bytes.len());
-                if stream.blocking_write_and_flush(&bytes[offset..end]).is_err() {
+                if stream
+                    .blocking_write_and_flush(&bytes[offset..end])
+                    .is_err()
+                {
                     break;
                 }
                 offset = end;
@@ -192,9 +198,7 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
     }
 }
 
-async fn handle_request(
-    req: http::Request<Vec<u8>>,
-) -> Result<Response<String>, String> {
+async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>, String> {
     // Load config values (cached for this request)
     store::init_config().await;
 
@@ -356,10 +360,7 @@ async fn handle_email_verification(query: &str) -> Result<Response<String>, Stri
         .unwrap())
 }
 
-async fn handle(
-    req: http::Request<Vec<u8>>,
-    remote_ip: &str,
-) -> Result<Response<String>, String> {
+async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response<String>, String> {
     let (parts, body) = req.into_parts();
 
     let full_path = parts
@@ -374,7 +375,9 @@ async fn handle(
     }
 
     if route_path == "/admin" || route_path.starts_with("/admin/") {
-        return Ok(admin::handle_admin_route(&parts.method, route_path, &parts.headers, &body).await);
+        return Ok(
+            admin::handle_admin_route(&parts.method, route_path, &parts.headers, &body).await,
+        );
     }
 
     let query = full_path.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -411,6 +414,8 @@ async fn handle(
         .get("authorization")
         .and_then(|v| v.to_str().ok());
 
+    let dpop = parts.headers.get("dpop").and_then(|v| v.to_str().ok());
+
     // In dev mode, ensure default test clients exist before handling auth/management flows.
     if is_dev_mode() {
         let _ = store::ensure_default_client().await;
@@ -434,6 +439,14 @@ async fn handle(
         (&Method::GET, "/.well-known/jwks.json") => Ok(discovery::jwks().await),
         (&Method::GET, "/version") => Ok(version_response()),
 
+        // ── RFC 9126 Pushed Authorization Requests ──────────
+        (&Method::POST, "/connect/par")
+        | (&Method::POST, "/oauth/par")
+        | (&Method::POST, "/as/par") => {
+            let body_bytes = read_body(body).await?;
+            par::handle_par(&body_bytes, &issuer, auth).await
+        }
+
         // ── OIDC flow ───────────────────────────────────────
         (&Method::GET, "/authorize") => authorize::handle(query, &issuer, &parts.headers).await,
 
@@ -442,7 +455,11 @@ async fn handle(
             if let Some((_, session_id)) = params.iter().find(|(k, _)| k == "session_id") {
                 Ok(login::login_page(session_id, None).await)
             } else {
-                let return_to_raw = params.iter().find(|(k, _)| k == "return_to").map(|(_, v)| v.as_str()).unwrap_or("/admin");
+                let return_to_raw = params
+                    .iter()
+                    .find(|(k, _)| k == "return_to")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("/admin");
                 let return_to = if return_to_raw.starts_with('/')
                     && !return_to_raw.starts_with("//")
                     && !return_to_raw.starts_with("/\\")
@@ -480,7 +497,7 @@ async fn handle(
 
         (&Method::POST, "/token") => {
             let body_bytes = read_body(body).await?;
-            token::handle(&body_bytes, &issuer, auth).await
+            token::handle(&body_bytes, &issuer, auth, dpop).await
         }
 
         (&Method::POST, "/token/introspect") => {
@@ -489,7 +506,7 @@ async fn handle(
         }
 
         (&Method::GET, "/userinfo") | (&Method::POST, "/userinfo") => {
-            userinfo::handle(auth, &issuer).await
+            userinfo::handle(auth, dpop, &issuer, parts.method.as_str()).await
         }
 
         // ── Logout ──────────────────────────────────────────
@@ -498,7 +515,7 @@ async fn handle(
         // ── Token revocation ────────────────────────────────
         (&Method::POST, "/token/revoke") => {
             let body_bytes = read_body(body).await?;
-            token::handle_revoke(&body_bytes, auth).await
+            token::handle_revoke(&body_bytes, &issuer, auth).await
         }
 
         // ── User registration ───────────────────────────────

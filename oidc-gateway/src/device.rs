@@ -99,7 +99,11 @@ pub async fn page(query: &str) -> Response<String> {
     render_device_page(prefilled_code, None, &theme)
 }
 
-fn render_device_page(prefilled_code: &str, error: Option<&str>, theme: &store::ClientTheme) -> Response<String> {
+fn render_device_page(
+    prefilled_code: &str,
+    error: Option<&str>,
+    theme: &store::ClientTheme,
+) -> Response<String> {
     let app_name = util::html_escape(&theme.app_name);
     let head_tags = crate::theme::render_head_tags(theme);
     let css_vars = crate::theme::render_css_variables(theme);

@@ -21,8 +21,13 @@ pub fn openid_configuration(issuer: &str) -> Response<String> {
         ],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256", "ES256"],
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
+        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+        "dpop_signing_alg_values_supported": ["RS256", "ES256"],
+        "pushed_authorization_request_endpoint": format!("{issuer}/connect/par"),
+        "require_pushed_authorization_requests": false,
         "code_challenge_methods_supported": ["S256"],
         "claims_parameter_supported": true,
         "claim_types_supported": ["normal"],
@@ -33,7 +38,7 @@ pub fn openid_configuration(issuer: &str) -> Response<String> {
         "backchannel_logout_session_supported": true,
         "authorization_response_iss_parameter_supported": true,
         "request_parameter_supported": false,
-        "request_uri_parameter_supported": false,
+        "request_uri_parameter_supported": true,
         "require_request_uri_registration": false,
     });
 
@@ -72,8 +77,13 @@ pub fn oauth_authorization_server(issuer: &str) -> Response<String> {
             "client_credentials",
             "urn:ietf:params:oauth:grant-type:device_code"
         ],
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
+        "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+        "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+        "dpop_signing_alg_values_supported": ["RS256", "ES256"],
+        "pushed_authorization_request_endpoint": format!("{issuer}/connect/par"),
+        "require_pushed_authorization_requests": false,
         "code_challenge_methods_supported": ["S256"],
         "authorization_response_iss_parameter_supported": true,
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
@@ -149,10 +159,12 @@ mod tests {
             "https://auth.example.com/token/introspect"
         );
         assert_eq!(body["authorization_response_iss_parameter_supported"], true);
-        assert!(body["code_challenge_methods_supported"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("S256")));
+        assert!(
+            body["code_challenge_methods_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("S256"))
+        );
     }
 
     #[test]
@@ -172,6 +184,31 @@ mod tests {
         assert_eq!(
             oauth_body["registration_endpoint"],
             "https://auth.example.com/connect/register"
+        );
+    }
+
+    #[test]
+    fn test_discovery_stage4_metadata() {
+        let resp = openid_configuration("https://auth.example.com");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
+        assert_eq!(
+            body["pushed_authorization_request_endpoint"],
+            "https://auth.example.com/connect/par"
+        );
+        assert_eq!(body["require_pushed_authorization_requests"], false);
+        assert_eq!(body["request_uri_parameter_supported"], true);
+        assert!(
+            body["dpop_signing_alg_values_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("ES256"))
+        );
+        assert!(
+            body["token_endpoint_auth_methods_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("private_key_jwt"))
         );
     }
 }

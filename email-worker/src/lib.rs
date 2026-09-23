@@ -252,7 +252,10 @@ mod ses {
                 "x-amz-content-sha256".to_string(),
                 payload_hash.as_bytes().to_vec(),
             ),
-            ("authorization".to_string(), authorization.as_bytes().to_vec()),
+            (
+                "authorization".to_string(),
+                authorization.as_bytes().to_vec(),
+            ),
         ];
 
         let fields = Fields::from_list(&headers_vec).map_err(|e| format!("headers: {e:?}"))?;
@@ -318,7 +321,12 @@ mod ses {
         mac.finalize().into_bytes().to_vec()
     }
 
-    pub fn derive_signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
+    pub fn derive_signing_key(
+        secret: &str,
+        datestamp: &str,
+        region: &str,
+        service: &str,
+    ) -> Vec<u8> {
         let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), datestamp.as_bytes());
         let k_region = hmac_sha256(&k_date, region.as_bytes());
         let k_service = hmac_sha256(&k_region, service.as_bytes());
@@ -352,4 +360,3 @@ mod tests {
         );
     }
 }
-

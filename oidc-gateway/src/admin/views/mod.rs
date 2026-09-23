@@ -1,16 +1,16 @@
-pub mod bootstrap;
-pub mod dashboard;
-pub mod login;
-pub mod tenants;
-pub mod clients;
-pub mod users;
-pub mod idps;
-pub mod hooks;
-pub mod settings;
-pub mod audit;
 pub mod account;
+pub mod audit;
+pub mod bootstrap;
+pub mod clients;
+pub mod dashboard;
+pub mod hooks;
+pub mod idps;
+pub mod login;
+pub mod settings;
+pub mod tenants;
+pub mod users;
 
-use maud::{html, Markup};
+use maud::{Markup, html};
 
 pub fn format_timestamp(ts: u64) -> String {
     if ts == 0 {
@@ -29,14 +29,22 @@ pub fn format_timestamp(ts: u64) -> String {
 }
 
 pub fn relative_time(ts: u64) -> String {
-    if ts == 0 { return "—".into(); }
+    if ts == 0 {
+        return "—".into();
+    }
     let now = crate::store::unix_now();
     let diff = now.saturating_sub(ts);
-    if diff < 60             { "just now".into() }
-    else if diff < 3_600     { format!("{}m ago", diff / 60) }
-    else if diff < 86_400    { format!("{}h ago", diff / 3_600) }
-    else if diff < 2_592_000 { format!("{}d ago", diff / 86_400) }
-    else { format_timestamp(ts) }
+    if diff < 60 {
+        "just now".into()
+    } else if diff < 3_600 {
+        format!("{}m ago", diff / 60)
+    } else if diff < 86_400 {
+        format!("{}h ago", diff / 3_600)
+    } else if diff < 2_592_000 {
+        format!("{}d ago", diff / 86_400)
+    } else {
+        format_timestamp(ts)
+    }
 }
 
 pub fn render_status_badge(status: &str) -> Markup {

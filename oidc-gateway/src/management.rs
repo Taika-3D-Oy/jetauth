@@ -565,6 +565,12 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
         /// Skip consent screen for this client (first-party / trusted app).
         #[serde(default)]
         first_party: bool,
+        #[serde(default)]
+        token_endpoint_auth_method: Option<String>,
+        #[serde(default)]
+        jwks: Option<serde_json::Value>,
+        #[serde(default)]
+        require_pushed_authorization_requests: bool,
     }
     let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
 
@@ -620,6 +626,15 @@ pub async fn create_client(auth: Option<&str>, body: &[u8]) -> Result<Response<S
             }
         },
         first_party: req.first_party,
+        token_endpoint_auth_method: req.token_endpoint_auth_method.or_else(|| {
+            if req.confidential {
+                Some("client_secret_basic".to_string())
+            } else {
+                Some("none".to_string())
+            }
+        }),
+        jwks: req.jwks,
+        require_pushed_authorization_requests: req.require_pushed_authorization_requests,
     };
     store::save_client(&client).await?;
 
@@ -711,6 +726,9 @@ pub async fn update_client(
         backchannel_logout_uri: Option<String>,
         backchannel_logout_session_required: Option<bool>,
         id_token_signed_response_alg: Option<String>,
+        token_endpoint_auth_method: Option<String>,
+        jwks: Option<serde_json::Value>,
+        require_pushed_authorization_requests: Option<bool>,
     }
 
     let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
@@ -761,6 +779,15 @@ pub async fn update_client(
             "ES256" => Some("ES256".to_string()),
             other => return Err(format!("unsupported id_token_signed_response_alg: {other}")),
         };
+    }
+    if let Some(method) = req.token_endpoint_auth_method {
+        client.token_endpoint_auth_method = Some(method);
+    }
+    if let Some(jwks) = req.jwks {
+        client.jwks = Some(jwks);
+    }
+    if let Some(req_par) = req.require_pushed_authorization_requests {
+        client.require_pushed_authorization_requests = req_par;
     }
 
     store::save_client(&client).await?;

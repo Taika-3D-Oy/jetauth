@@ -18,7 +18,14 @@ fn token_error(status: StatusCode, error: &str, description: &str) -> Response<S
 
 /// Map an internal error string to a RFC 6749 §5.2 error response.
 fn map_token_error(e: &str) -> Response<String> {
-    if e.contains("client_id") || e.contains("client_secret") || e.contains("client authentication")
+    if e.starts_with("invalid_dpop_proof") || e.contains("DPoP") {
+        token_error(StatusCode::BAD_REQUEST, "invalid_dpop_proof", e)
+    } else if e.contains("client_id")
+        || e.contains("client_secret")
+        || e.contains("client authentication")
+        || e.contains("client_assertion")
+        || e.contains("unregistered client")
+        || e.contains("invalid client")
     {
         token_error(StatusCode::UNAUTHORIZED, "invalid_client", e)
     } else if e.contains("grant_type") || e.contains("not authorized to use") {
@@ -42,38 +49,17 @@ fn map_token_error(e: &str) -> Response<String> {
     }
 }
 
-/// Parse client credentials from HTTP Basic Authorization header (RFC 6749 §2.3.1).
-fn parse_basic_auth(auth_header: Option<&str>) -> Option<(String, String)> {
-    let header = auth_header?;
-    let encoded = header
-        .strip_prefix("Basic ")
-        .or_else(|| header.strip_prefix("basic "))?;
-    let decoded =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
-    let text = String::from_utf8(decoded).ok()?;
-    let (client_id, client_secret) = text.split_once(':')?;
-    Some((util::url_decode(client_id), util::url_decode(client_secret)))
-}
+#[allow(unused_imports)]
+pub use crate::client_auth::parse_basic_auth;
 
-/// Handle POST /token — authorization_code and refresh_token grants.
+/// Handle POST /token — authorization_code, refresh_token, client_credentials, and device_code grants.
 pub async fn handle(
     body_bytes: &[u8],
     issuer: &str,
     auth_header: Option<&str>,
+    dpop_header: Option<&str>,
 ) -> Result<Response<String>, String> {
-    let mut form = util::parse_form(body_bytes);
-
-    // Support client_secret_basic: override form credentials with Basic auth if present
-    if let Some((basic_id, basic_secret)) = parse_basic_auth(auth_header) {
-        // Per RFC 6749 §2.3: client MUST NOT use more than one authentication method
-        let form_has_secret = form.iter().any(|(k, _)| k == "client_secret");
-        if !form_has_secret {
-            // Remove any form client_id and replace with Basic credentials
-            form.retain(|(k, _)| k != "client_id");
-            form.push(("client_id".to_string(), basic_id));
-            form.push(("client_secret".to_string(), basic_secret));
-        }
-    }
+    let form = util::parse_form(body_bytes);
 
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
@@ -81,14 +67,37 @@ pub async fn handle(
 
     let grant_type = get("grant_type").ok_or("missing grant_type")?;
 
-    // Rate limit token endpoint per client_id: 100 requests per 60s
-    let rate_key = match get("client_id") {
-        Some(cid) => format!("token:{}", cid),
-        None => match get("refresh_token") {
-            Some(rt) => format!("token_rt:{}", &rt[..rt.len().min(16)]),
-            None => format!("token_grant:{}", grant_type),
-        },
+    // DPoP proof validation per RFC 9449
+    let dpop_jkt = match dpop_header {
+        Some(proof) => {
+            match crate::dpop::validate_dpop_proof(proof, "POST", &format!("{issuer}/token"), None)
+                .await
+            {
+                Ok(jkt) => Some(jkt),
+                Err(e) => {
+                    return Ok(token_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_dpop_proof",
+                        &e,
+                    ));
+                }
+            }
+        }
+        None => None,
     };
+
+    // Client authentication per RFC 6749 §2.3 and RFC 7523
+    let auth_client =
+        match crate::client_auth::authenticate_client(&form, auth_header, issuer, "/token").await {
+            Ok(ac) => ac,
+            Err(e) => {
+                return Ok(map_token_error(&e));
+            }
+        };
+    let client = auth_client.client;
+
+    // Rate limit token endpoint per client_id: 100 requests per 60s
+    let rate_key = format!("token:{}", client.client_id);
     match crate::service_client::check_rate(&rate_key, 100, 60).await {
         Ok((false, _)) => return Err("too many token requests. please try again later.".into()),
         Err(e) => crate::logger::error_message("rate_limit.token_check_failed", e),
@@ -96,10 +105,16 @@ pub async fn handle(
     }
 
     let result = match grant_type {
-        "authorization_code" => handle_code_exchange(&form, issuer).await,
-        "refresh_token" => handle_refresh(&form, issuer).await,
-        "client_credentials" => handle_client_credentials(&form, issuer).await,
-        "urn:ietf:params:oauth:grant-type:device_code" => handle_device_code(&form, issuer).await,
+        "authorization_code" => {
+            handle_code_exchange(&form, &client, dpop_jkt.as_deref(), issuer).await
+        }
+        "refresh_token" => handle_refresh(&form, &client, dpop_jkt.as_deref(), issuer).await,
+        "client_credentials" => {
+            handle_client_credentials(&form, &client, dpop_jkt.as_deref(), issuer).await
+        }
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            handle_device_code(&form, &client, dpop_jkt.as_deref(), issuer).await
+        }
         _ => {
             return Ok(token_error(
                 StatusCode::BAD_REQUEST,
@@ -117,6 +132,8 @@ pub async fn handle(
 
 async fn handle_code_exchange(
     form: &[(String, String)],
+    client: &store::OidcClient,
+    dpop_jkt: Option<&str>,
     issuer: &str,
 ) -> Result<Response<String>, String> {
     let get = |key: &str| -> Option<&str> {
@@ -126,18 +143,14 @@ async fn handle_code_exchange(
     let code = get("code").ok_or("missing code")?;
     let code_verifier = get("code_verifier");
     let redirect_uri = get("redirect_uri").ok_or("missing redirect_uri")?;
-    let client_id = get("client_id").ok_or("missing client_id")?;
-    let client_secret = get("client_secret");
 
-    // Verify client
-    let client = verify_client(client_id, client_secret).await?;
     if !client
         .grant_types
         .contains(&"authorization_code".to_string())
     {
         return Err(format!(
             "client '{}' is not authorized to use grant_type 'authorization_code'",
-            client_id
+            client.client_id
         ));
     }
 
@@ -146,7 +159,7 @@ async fn handle_code_exchange(
         .await?
         .ok_or("invalid or expired code")?;
 
-    if auth_code.client_id != client_id {
+    if auth_code.client_id != client.client_id {
         return Err("client_id mismatch".into());
     }
     if auth_code.redirect_uri != redirect_uri {
@@ -166,7 +179,7 @@ async fn handle_code_exchange(
         ) {
             return Err("PKCE verification failed".into());
         }
-    } else if client.client_secret.is_none() {
+    } else if client.client_secret.is_none() && client.jwks.is_none() {
         // Public client MUST have used PKCE
         return Err("PKCE required for public clients".into());
     }
@@ -193,7 +206,7 @@ async fn handle_code_exchange(
     let (access_claims, id_claims) = build_claims(
         issuer,
         &user,
-        client_id,
+        &client.client_id,
         nonce,
         auth_time,
         &auth_code.amr,
@@ -202,6 +215,7 @@ async fn handle_code_exchange(
         &auth_code.requested_id_token_claims,
         &auth_code.requested_userinfo_claims,
         &auth_code.extra_claims,
+        dpop_jkt,
     )
     .await;
 
@@ -211,7 +225,7 @@ async fn handle_code_exchange(
     // OIDC Core §3.1.3.6: at_hash is REQUIRED in id_token from the token endpoint
     let mut id_claims = id_claims;
     id_claims["at_hash"] = serde_json::json!(compute_at_hash(&access_token));
-    let id_token = jwt::sign_id_token_for_client(&id_claims, &client).await?;
+    let id_token = jwt::sign_id_token_for_client(&id_claims, client).await?;
 
     // Create refresh token
     let refresh_raw = store::random_hex(32);
@@ -219,7 +233,7 @@ async fn handle_code_exchange(
     let now = store::unix_now();
     let refresh_entry = store::RefreshEntry {
         user_id: user.id,
-        client_id: client_id.to_string(),
+        client_id: client.client_id.clone(),
         expires_at: now + 86400 * 30,
         scope: auth_code.scope.clone(),
         version: now,
@@ -248,12 +262,14 @@ async fn handle_code_exchange(
     }
 
     // Only issue refresh token when offline_access scope is present or client is confidential
-    let has_offline_access =
-        auth_code.scope.split(' ').any(|s| s == "offline_access") || client.client_secret.is_some();
+    let has_offline_access = auth_code.scope.split(' ').any(|s| s == "offline_access")
+        || client.client_secret.is_some()
+        || client.jwks.is_some();
 
+    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     let mut response = serde_json::json!({
         "access_token": access_token,
-        "token_type": "Bearer",
+        "token_type": token_type,
         "expires_in": 3600,
         "id_token": id_token,
         "scope": auth_code.scope,
@@ -275,6 +291,8 @@ async fn handle_code_exchange(
 
 async fn handle_refresh(
     form: &[(String, String)],
+    client: &store::OidcClient,
+    dpop_jkt: Option<&str>,
     issuer: &str,
 ) -> Result<Response<String>, String> {
     let get = |key: &str| -> Option<&str> {
@@ -282,14 +300,11 @@ async fn handle_refresh(
     };
 
     let refresh_token = get("refresh_token").ok_or("missing refresh_token")?;
-    let client_id = get("client_id").ok_or("missing client_id")?;
-    let client_secret = get("client_secret");
 
-    let client = verify_client(client_id, client_secret).await?;
     if !client.grant_types.contains(&"refresh_token".to_string()) {
         return Err(format!(
             "client '{}' is not authorized to use grant_type 'refresh_token'",
-            client_id
+            client.client_id
         ));
     }
 
@@ -322,7 +337,7 @@ async fn handle_refresh(
         }
     };
 
-    if entry.client_id != client_id {
+    if entry.client_id != client.client_id {
         return Err("client_id mismatch".into());
     }
     let now = store::unix_now();
@@ -369,7 +384,7 @@ async fn handle_refresh(
     let (access_claims, id_claims) = build_claims(
         issuer,
         &user,
-        client_id,
+        &client.client_id,
         None,
         auth_time,
         &entry.amr,
@@ -378,6 +393,7 @@ async fn handle_refresh(
         &entry.requested_id_token_claims,
         &entry.requested_userinfo_claims,
         &[],
+        dpop_jkt,
     )
     .await;
 
@@ -386,14 +402,14 @@ async fn handle_refresh(
     // OIDC Core §3.1.3.6: at_hash is REQUIRED in id_token from the token endpoint
     let mut id_claims = id_claims;
     id_claims["at_hash"] = serde_json::json!(compute_at_hash(&access_token));
-    let id_token = jwt::sign_id_token_for_client(&id_claims, &client).await?;
+    let id_token = jwt::sign_id_token_for_client(&id_claims, client).await?;
 
     // Issue new refresh token
     let new_refresh_raw = store::random_hex(32);
     let new_refresh_hash = hex_sha256(&new_refresh_raw);
     let new_entry = store::RefreshEntry {
         user_id: entry.user_id.clone(),
-        client_id: client_id.to_string(),
+        client_id: client.client_id.clone(),
         // Sliding window capped at absolute max
         expires_at: (now + 86400 * 30).min(family_issued_at + absolute_max),
         scope: entry.scope.clone(),
@@ -425,9 +441,10 @@ async fn handle_refresh(
         .await;
     }
 
+    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     let response = serde_json::json!({
         "access_token": access_token,
-        "token_type": "Bearer",
+        "token_type": token_type,
         "expires_in": 3600,
         "id_token": id_token,
         "refresh_token": new_refresh_raw,
@@ -446,41 +463,45 @@ async fn handle_refresh(
 /// Issues a machine-to-machine access token; no user identity, no id_token.
 async fn handle_client_credentials(
     form: &[(String, String)],
+    client: &store::OidcClient,
+    dpop_jkt: Option<&str>,
     issuer: &str,
 ) -> Result<Response<String>, String> {
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
 
-    let client_id = get("client_id").ok_or("missing client_id")?;
-    let client_secret =
-        get("client_secret").ok_or("client_secret required for client_credentials grant")?;
     let scope = get("scope").unwrap_or("").to_string();
 
     // Only confidential clients may use client_credentials
-    let client = authenticate_confidential_client(client_id, client_secret).await?;
+    if client.client_secret.is_none() && client.jwks.is_none() {
+        return Err("client_credentials grant requires confidential client".into());
+    }
     if !client
         .grant_types
         .contains(&"client_credentials".to_string())
     {
         return Err(format!(
             "client '{}' is not authorized to use grant_type 'client_credentials'",
-            client_id
+            client.client_id
         ));
     }
 
     let now = store::unix_now();
-    let access_claims = serde_json::json!({
+    let mut access_claims = serde_json::json!({
         "iss": issuer,
-        "sub": client_id,
-        "aud": client_id,
+        "sub": client.client_id,
+        "aud": client.client_id,
         "exp": now + 3600,
         "nbf": now - 30,
         "iat": now,
         "scope": scope,
         "token_type": "client_credentials",
-        "client_id": client_id,
+        "client_id": client.client_id,
     });
+    if let Some(jkt) = dpop_jkt {
+        access_claims["cnf"] = serde_json::json!({ "jkt": jkt });
+    }
 
     let access_token = jwt::sign(&access_claims).await?;
 
@@ -493,9 +514,10 @@ async fn handle_client_credentials(
     )
     .await;
 
+    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     let response = serde_json::json!({
         "access_token": access_token,
-        "token_type": "Bearer",
+        "token_type": token_type,
         "expires_in": 3600,
         "scope": scope,
     });
@@ -512,6 +534,8 @@ async fn handle_client_credentials(
 /// Client polls here until user approves or the code expires.
 async fn handle_device_code(
     form: &[(String, String)],
+    client: &store::OidcClient,
+    dpop_jkt: Option<&str>,
     issuer: &str,
 ) -> Result<Response<String>, String> {
     let get = |key: &str| -> Option<&str> {
@@ -519,14 +543,6 @@ async fn handle_device_code(
     };
 
     let device_code = get("device_code").ok_or("missing device_code")?;
-    let client_id = get("client_id").ok_or("missing client_id")?;
-    let client_secret = get("client_secret");
-
-    // Authenticate client and fetch its config (needed for id_token alg).
-    let _ = verify_client(client_id, client_secret).await?;
-    let client = store::get_client(client_id)
-        .await?
-        .ok_or("client not found")?;
 
     // Enforce minimum poll interval (5 s) per RFC 8628 §3.5
     let rate_key = format!("device_poll:{device_code}");
@@ -553,7 +569,7 @@ async fn handle_device_code(
         }
     };
 
-    if dc.client_id != client_id {
+    if dc.client_id != client.client_id {
         return Ok(token_error(
             StatusCode::BAD_REQUEST,
             "invalid_grant",
@@ -601,7 +617,7 @@ async fn handle_device_code(
             let (access_claims, id_claims) = build_claims(
                 issuer,
                 &user,
-                client_id,
+                &client.client_id,
                 None,
                 now,
                 &["device".to_string()],
@@ -610,13 +626,14 @@ async fn handle_device_code(
                 &[],
                 &[],
                 &[],
+                dpop_jkt,
             )
             .await;
 
             let access_token = jwt::sign(&access_claims).await?;
             let mut id_claims = id_claims;
             id_claims["at_hash"] = serde_json::json!(compute_at_hash(&access_token));
-            let id_token = jwt::sign_id_token_for_client(&id_claims, &client).await?;
+            let id_token = jwt::sign_id_token_for_client(&id_claims, client).await?;
 
             // Refresh token — only if offline_access requested
             let has_offline = dc.scope.split(' ').any(|s| s == "offline_access");
@@ -624,7 +641,7 @@ async fn handle_device_code(
             let refresh_hash = hex_sha256(&refresh_raw);
             let refresh_entry = store::RefreshEntry {
                 user_id: user.id.clone(),
-                client_id: client_id.to_string(),
+                client_id: client.client_id.clone(),
                 expires_at: now + 86400 * 30,
                 scope: dc.scope.clone(),
                 version: now,
@@ -645,9 +662,10 @@ async fn handle_device_code(
             )
             .await;
 
+            let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
             let mut response = serde_json::json!({
                 "access_token": access_token,
-                "token_type": "Bearer",
+                "token_type": token_type,
                 "expires_in": 3600,
                 "id_token": id_token,
                 "scope": dc.scope,
@@ -676,20 +694,10 @@ async fn handle_device_code(
 /// Handle POST /token — token revocation (RFC 7009).
 pub async fn handle_revoke(
     body_bytes: &[u8],
+    issuer: &str,
     auth_header: Option<&str>,
 ) -> Result<Response<String>, String> {
-    let mut form = util::parse_form(body_bytes);
-
-    // Support client_secret_basic (RFC 7009 §2.1)
-    if let Some((basic_id, basic_secret)) = parse_basic_auth(auth_header) {
-        let form_has_secret = form.iter().any(|(k, _)| k == "client_secret");
-        if !form_has_secret {
-            form.retain(|(k, _)| k != "client_id");
-            form.push(("client_id".to_string(), basic_id));
-            form.push(("client_secret".to_string(), basic_secret));
-        }
-    }
-
+    let form = util::parse_form(body_bytes);
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
@@ -705,29 +713,22 @@ pub async fn handle_revoke(
         }
     };
     let token_type_hint = get("token_type_hint");
-    let client_id = match get("client_id") {
-        Some(cid) => cid,
-        None => {
-            return Ok(token_error(
-                StatusCode::UNAUTHORIZED,
-                "invalid_client",
-                "client_id is required for revocation",
-            ));
-        }
-    };
-    let client_secret = get("client_secret");
 
-    // Authenticate the client (RFC 7009 §2.1).
-    let client = match verify_client(client_id, client_secret).await {
-        Ok(c) => c,
-        Err(_) => {
-            return Ok(token_error(
-                StatusCode::UNAUTHORIZED,
-                "invalid_client",
-                "client authentication failed",
-            ));
-        }
-    };
+    // Authenticate the client (RFC 7009 §2.1 and RFC 7523).
+    let auth_client =
+        match crate::client_auth::authenticate_client(&form, auth_header, issuer, "/token/revoke")
+            .await
+        {
+            Ok(ac) => ac,
+            Err(_) => {
+                return Ok(token_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "client authentication failed",
+                ));
+            }
+        };
+    let client = auth_client.client;
 
     // Try to revoke as refresh token first (most common case).
     // Verify that the token was issued to the authenticated client (RFC 7009 §2.1).
@@ -751,13 +752,7 @@ pub async fn handle_revoke(
     // Per RFC 7009, always return 200 OK regardless of whether the token was found
     // (to prevent token existence probing).
     if revoked_refresh {
-        let _ = store::log_audit(
-            "token_revoked",
-            "",
-            &client.client_id,
-            "refresh_token",
-        )
-        .await;
+        let _ = store::log_audit("token_revoked", "", &client.client_id, "refresh_token").await;
     }
 
     Ok(Response::builder()
@@ -773,28 +768,22 @@ pub async fn handle_introspect(
     issuer: &str,
     auth_header: Option<&str>,
 ) -> Result<Response<String>, String> {
-    let mut form = util::parse_form(body_bytes);
-
-    // Support client_secret_basic for introspection
-    if let Some((basic_id, basic_secret)) = parse_basic_auth(auth_header) {
-        let form_has_secret = form.iter().any(|(k, _)| k == "client_secret");
-        if !form_has_secret {
-            form.retain(|(k, _)| k != "client_id");
-            form.push(("client_id".to_string(), basic_id));
-            form.push(("client_secret".to_string(), basic_secret));
-        }
-    }
-
+    let form = util::parse_form(body_bytes);
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
 
     let token = get("token").ok_or("missing token")?;
-    let client_id = get("client_id").ok_or("missing client_id")?;
-    let client_secret = get("client_secret").ok_or("missing client_secret")?;
 
-    let client = match authenticate_confidential_client(client_id, client_secret).await {
-        Ok(client) => client,
+    let auth_client = match crate::client_auth::authenticate_client(
+        &form,
+        auth_header,
+        issuer,
+        "/token/introspect",
+    )
+    .await
+    {
+        Ok(ac) => ac,
         Err(_) => {
             return Ok(Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
@@ -805,6 +794,20 @@ pub async fn handle_introspect(
                 .unwrap());
         }
     };
+    let client = auth_client.client;
+
+    if client.client_secret.is_none() && client.jwks.is_none() {
+        return Ok(Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("content-type", "application/json")
+            .header("cache-control", "no-store")
+            .header("www-authenticate", "Basic realm=\"token-introspection\"")
+            .body(
+                r#"{"error":"invalid_client","error_description":"client must be confidential"}"#
+                    .to_string(),
+            )
+            .unwrap());
+    }
 
     match crate::service_client::check_rate(&format!("introspect:{}", client.client_id), 100, 60)
         .await
@@ -831,36 +834,6 @@ pub async fn handle_introspect(
         .header("cache-control", "no-store")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
-}
-
-async fn authenticate_confidential_client(
-    client_id: &str,
-    client_secret: &str,
-) -> Result<store::OidcClient, String> {
-    use subtle::ConstantTimeEq;
-
-    let client = store::get_client(client_id)
-        .await?
-        .ok_or("invalid client authentication")?;
-    let expected_hash = client
-        .client_secret
-        .as_deref()
-        .ok_or("invalid client authentication")?;
-
-    let provided_hash = store::hmac_client_secret(client_secret);
-    let matches: bool = expected_hash
-        .as_bytes()
-        .ct_eq(provided_hash.as_bytes())
-        .into()
-        || expected_hash
-            .as_bytes()
-            .ct_eq(client_secret.as_bytes())
-            .into();
-    if !matches {
-        return Err("invalid client authentication".into());
-    }
-
-    Ok(client)
 }
 
 fn build_introspection_response(claims: &serde_json::Value) -> serde_json::Value {
@@ -906,6 +879,11 @@ fn build_introspection_response(claims: &serde_json::Value) -> serde_json::Value
         }
     }
 
+    if let Some(cnf) = claims.get("cnf") {
+        response["cnf"] = cnf.clone();
+        response["token_type"] = serde_json::json!("DPoP");
+    }
+
     response
 }
 
@@ -937,43 +915,6 @@ fn compute_at_hash(access_token: &str) -> String {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-async fn verify_client(
-    client_id: &str,
-    client_secret: Option<&str>,
-) -> Result<store::OidcClient, String> {
-    use subtle::ConstantTimeEq;
-
-    let client = store::get_client(client_id)
-        .await?
-        .ok_or_else(|| format!("unknown client_id: {client_id}"))?;
-
-    if let Some(stored_hash) = &client.client_secret {
-        match client_secret {
-            Some(provided) => {
-                // Hash the provided secret with the same pepper used at creation time
-                // and compare against the stored HMAC hash.
-                let provided_hash = store::hmac_client_secret(provided);
-                if provided_hash
-                    .as_bytes()
-                    .ct_eq(stored_hash.as_bytes())
-                    .into()
-                    || provided
-                        .as_bytes()
-                        .ct_eq(stored_hash.as_bytes())
-                        .into()
-                {
-                    Ok(client)
-                } else {
-                    Err("invalid client_secret".into())
-                }
-            }
-            None => Err("client_secret required for confidential clients".into()),
-        }
-    } else {
-        Ok(client)
-    }
-}
-
 fn verify_pkce(code_verifier: &str, code_challenge: &str, method: &str) -> bool {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use sha2::{Digest, Sha256};
@@ -1002,6 +943,7 @@ async fn build_claims(
     requested_id_token_claims: &[String],
     requested_userinfo_claims: &[String],
     extra_claims: &[(String, String)],
+    dpop_jkt: Option<&str>,
 ) -> (serde_json::Value, serde_json::Value) {
     let now = store::unix_now();
     let memberships = store::list_user_tenants(&user.id).await.unwrap_or_default();
@@ -1021,6 +963,9 @@ async fn build_claims(
         "auth_time": auth_time,
         "token_type": "access",
     });
+    if let Some(jkt) = dpop_jkt {
+        access_claims["cnf"] = serde_json::json!({ "jkt": jkt });
+    }
     let mut id_claims = serde_json::json!({
         "iss": issuer,
         "sub": user.id,
@@ -1234,7 +1179,10 @@ mod tests {
     #[test]
     fn test_constant_time_secret_comparison() {
         use subtle::ConstantTimeEq;
-        crate::store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+        crate::store::init_config_for_test(
+            false,
+            Some("test_pepper_123456789012345678901234567890"),
+        );
         let raw_secret = "sufrb67tompp8k8t32qnzuzi39fktu6f";
         let hmac_hash = crate::store::hmac_client_secret(raw_secret);
 
@@ -1252,15 +1200,24 @@ mod tests {
         let wrong_secret = "wrong_secret_12345678901234567890";
         let wrong_hmac = crate::store::hmac_client_secret(wrong_secret);
         let matches_wrong: bool = hmac_hash.as_bytes().ct_eq(wrong_hmac.as_bytes()).into();
-        let matches_wrong_legacy: bool = legacy_stored.as_bytes().ct_eq(wrong_secret.as_bytes()).into();
+        let matches_wrong_legacy: bool = legacy_stored
+            .as_bytes()
+            .ct_eq(wrong_secret.as_bytes())
+            .into();
         assert!(!matches_wrong && !matches_wrong_legacy);
     }
 
     #[test]
     fn test_handle_revoke_missing_token() {
         futures::executor::block_on(async {
+            crate::store::init_config_for_test(
+                false,
+                Some("test_pepper_123456789012345678901234567890"),
+            );
             let body = b"client_id=test-client";
-            let resp = super::handle_revoke(body, None).await.unwrap();
+            let resp = super::handle_revoke(body, "https://auth.example.com", None)
+                .await
+                .unwrap();
             assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
             let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
             assert_eq!(val["error"], "invalid_request");
@@ -1270,11 +1227,54 @@ mod tests {
     #[test]
     fn test_handle_revoke_missing_client_id() {
         futures::executor::block_on(async {
+            crate::store::init_config_for_test(
+                false,
+                Some("test_pepper_123456789012345678901234567890"),
+            );
             let body = b"token=some-token-value";
-            let resp = super::handle_revoke(body, None).await.unwrap();
+            let resp = super::handle_revoke(body, "https://auth.example.com", None)
+                .await
+                .unwrap();
             assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
             let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
             assert_eq!(val["error"], "invalid_client");
+        });
+    }
+
+    #[test]
+    fn test_introspection_response_dpop() {
+        let claims = serde_json::json!({
+            "sub": "user_123",
+            "iss": "https://auth.example.com",
+            "aud": "test-client",
+            "cnf": {
+                "jkt": "0ZcOCORZTXcrgnRlOZjvzcGEQXO9RI1mNVZZY3wu_2k"
+            }
+        });
+        let resp = super::build_introspection_response(&claims);
+        assert_eq!(resp["active"], true);
+        assert_eq!(resp["token_type"], "DPoP");
+        assert_eq!(
+            resp["cnf"]["jkt"],
+            "0ZcOCORZTXcrgnRlOZjvzcGEQXO9RI1mNVZZY3wu_2k"
+        );
+    }
+
+    #[test]
+    fn test_handle_invalid_dpop_proof() {
+        futures::executor::block_on(async {
+            let body = b"grant_type=client_credentials&client_id=test-client";
+            let resp = super::handle(
+                body,
+                "https://auth.example.com",
+                None,
+                Some("invalid.dpop.jwt"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+            let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
+            assert_eq!(val["error"], "invalid_dpop_proof");
         });
     }
 }

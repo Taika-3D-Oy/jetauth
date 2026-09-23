@@ -333,7 +333,9 @@ mod tests {
         assert!(is_safe_external_url("http://sub.localhost/api").is_err());
         assert!(is_safe_external_url("http://internal.taika3d.local/api").is_err());
         assert!(is_safe_external_url("http://service.default.internal:8080").is_err());
-        assert!(is_safe_external_url("http://metadata.google.internal/computeMetadata/v1/").is_err());
+        assert!(
+            is_safe_external_url("http://metadata.google.internal/computeMetadata/v1/").is_err()
+        );
 
         // Private/loopback IPv4
         assert!(is_safe_external_url("http://127.0.0.1:8080/hook").is_err());

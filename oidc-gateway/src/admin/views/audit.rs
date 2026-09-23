@@ -1,8 +1,8 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::{format_timestamp, relative_time};
 use crate::store::{self, AuditEvent};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_audit_page(
     session: &AdminSession,
@@ -10,16 +10,9 @@ pub async fn render_audit_page(
     target_id: Option<&str>,
     event_type: Option<&str>,
 ) -> Response<String> {
-    let events = store::list_audit_events(
-        actor_id,
-        target_id,
-        event_type,
-        None,
-        None,
-        100,
-    )
-    .await
-    .unwrap_or_default();
+    let events = store::list_audit_events(actor_id, target_id, event_type, None, None, 100)
+        .await
+        .unwrap_or_default();
 
     let content = html! {
         div class="page-header" {

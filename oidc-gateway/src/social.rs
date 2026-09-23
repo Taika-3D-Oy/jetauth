@@ -152,8 +152,7 @@ pub async fn callback(
         .get("jwks_uri")
         .and_then(|v| v.as_str())
         .ok_or("missing jwks_uri in provider discovery")?;
-    util::is_safe_external_url(jwks_uri)
-        .map_err(|e| format!("insecure jwks_uri: {e}"))?;
+    util::is_safe_external_url(jwks_uri).map_err(|e| format!("insecure jwks_uri: {e}"))?;
 
     let expected_issuer = discovery
         .get("issuer")

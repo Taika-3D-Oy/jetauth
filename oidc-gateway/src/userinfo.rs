@@ -95,8 +95,9 @@ fn populate_userinfo_claim(
     }
 }
 
-/// RFC 6750 §3.1 compliant error response for protected resources.
+/// RFC 6750 §3.1 / RFC 9449 §7.1 compliant error response for protected resources.
 fn unauthorized_response(
+    scheme: &str,
     status: StatusCode,
     error: Option<(&str, &str)>,
 ) -> Response<String> {
@@ -109,7 +110,7 @@ fn unauthorized_response(
         Some((code, desc)) => {
             builder = builder.header(
                 "www-authenticate",
-                format!("Bearer error=\"{code}\", error_description=\"{desc}\""),
+                format!("{scheme} error=\"{code}\", error_description=\"{desc}\""),
             );
             let body = serde_json::json!({
                 "error": code,
@@ -118,7 +119,7 @@ fn unauthorized_response(
             builder.body(body.to_string()).unwrap()
         }
         None => {
-            builder = builder.header("www-authenticate", "Bearer");
+            builder = builder.header("www-authenticate", scheme);
             let body = serde_json::json!({
                 "error": "unauthorized",
                 "error_description": "missing authorization header",
@@ -128,14 +129,63 @@ fn unauthorized_response(
     }
 }
 
-/// Handle GET /userinfo — validate Bearer token, return user claims.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthScheme {
+    Bearer,
+    DPoP,
+}
+
+pub fn extract_token(
+    header: Option<&str>,
+) -> Result<(String, AuthScheme), (StatusCode, Option<&'static str>, &'static str)> {
+    let header = header.ok_or((
+        StatusCode::UNAUTHORIZED,
+        None,
+        "missing authorization header",
+    ))?;
+    if let Some(t) = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+    {
+        Ok((t.trim().to_string(), AuthScheme::Bearer))
+    } else if let Some(t) = header
+        .strip_prefix("DPoP ")
+        .or_else(|| header.strip_prefix("dpop "))
+    {
+        Ok((t.trim().to_string(), AuthScheme::DPoP))
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            Some("invalid_request"),
+            "invalid Authorization header (expected Bearer or DPoP)",
+        ))
+    }
+}
+
+#[allow(dead_code)]
+pub fn extract_bearer(
+    header: Option<&str>,
+) -> Result<String, (StatusCode, Option<&'static str>, &'static str)> {
+    extract_token(header).map(|(t, _)| t)
+}
+
+/// Handle GET/POST /userinfo — validate Bearer or DPoP token, return user claims.
 /// Per OIDC Core §5.3.3: The access token MUST be validated (issuer, audience, type).
-/// Per RFC 6750 §3.1: Failed authentication MUST return 401 with WWW-Authenticate header.
-pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<String>, String> {
-    let token = match extract_bearer(auth_header) {
+/// Per RFC 6750 §3.1 / RFC 9449 §7: Failed authentication MUST return 401 with WWW-Authenticate header.
+pub async fn handle(
+    auth_header: Option<&str>,
+    dpop_header: Option<&str>,
+    issuer: &str,
+    method: &str,
+) -> Result<Response<String>, String> {
+    let (token, scheme) = match extract_token(auth_header) {
         Ok(t) => t,
         Err((status, code, desc)) => {
-            return Ok(unauthorized_response(status, code.map(|c| (c, desc))));
+            return Ok(unauthorized_response(
+                "Bearer",
+                status,
+                code.map(|c| (c, desc)),
+            ));
         }
     };
 
@@ -150,17 +200,89 @@ pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<
     {
         Ok(c) => c,
         Err(e) => {
+            let auth_scheme = if scheme == AuthScheme::DPoP {
+                "DPoP"
+            } else {
+                "Bearer"
+            };
             return Ok(unauthorized_response(
+                auth_scheme,
                 StatusCode::UNAUTHORIZED,
                 Some(("invalid_token", &e)),
             ));
         }
     };
 
+    // RFC 9449 §7: Check sender-constraining
+    if let Some(cnf) = claims.get("cnf") {
+        let expected_jkt = match cnf.get("jkt").and_then(|v| v.as_str()) {
+            Some(jkt) => jkt,
+            None => {
+                return Ok(unauthorized_response(
+                    "DPoP",
+                    StatusCode::UNAUTHORIZED,
+                    Some(("invalid_token", "malformed cnf claim in access token")),
+                ));
+            }
+        };
+
+        let proof = match dpop_header {
+            Some(p) => p,
+            None => {
+                return Ok(unauthorized_response(
+                    "DPoP",
+                    StatusCode::UNAUTHORIZED,
+                    Some((
+                        "invalid_token",
+                        "DPoP proof required for DPoP bound access token",
+                    )),
+                ));
+            }
+        };
+
+        let proof_jkt = match crate::dpop::validate_dpop_proof(
+            proof,
+            method,
+            &format!("{issuer}/userinfo"),
+            Some(&token),
+        )
+        .await
+        {
+            Ok(jkt) => jkt,
+            Err(e) => {
+                return Ok(unauthorized_response(
+                    "DPoP",
+                    StatusCode::UNAUTHORIZED,
+                    Some(("invalid_dpop_proof", &e)),
+                ));
+            }
+        };
+
+        if proof_jkt != expected_jkt {
+            return Ok(unauthorized_response(
+                "DPoP",
+                StatusCode::UNAUTHORIZED,
+                Some(("invalid_token", "DPoP key thumbprint mismatch")),
+            ));
+        }
+    } else if scheme == AuthScheme::DPoP {
+        return Ok(unauthorized_response(
+            "Bearer",
+            StatusCode::UNAUTHORIZED,
+            Some(("invalid_token", "access token is not DPoP bound")),
+        ));
+    }
+
     let user_id = match claims.get("sub").and_then(|value| value.as_str()) {
         Some(id) => id,
         None => {
+            let auth_scheme = if scheme == AuthScheme::DPoP {
+                "DPoP"
+            } else {
+                "Bearer"
+            };
             return Ok(unauthorized_response(
+                auth_scheme,
                 StatusCode::UNAUTHORIZED,
                 Some(("invalid_token", "missing subject claim")),
             ));
@@ -170,7 +292,13 @@ pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<
     let user = match crate::store::get_user(user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
+            let auth_scheme = if scheme == AuthScheme::DPoP {
+                "DPoP"
+            } else {
+                "Bearer"
+            };
             return Ok(unauthorized_response(
+                auth_scheme,
                 StatusCode::UNAUTHORIZED,
                 Some(("invalid_token", "user not found")),
             ));
@@ -190,25 +318,6 @@ pub async fn handle(auth_header: Option<&str>, issuer: &str) -> Result<Response<
         .header("cache-control", "no-store")
         .body(serde_json::to_string(&serde_json::Value::Object(userinfo)).unwrap_or_default())
         .unwrap())
-}
-
-fn extract_bearer(
-    header: Option<&str>,
-) -> Result<String, (StatusCode, Option<&'static str>, &'static str)> {
-    let header = header.ok_or((
-        StatusCode::UNAUTHORIZED,
-        None,
-        "missing authorization header",
-    ))?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "))
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            Some("invalid_request"),
-            "invalid Authorization header (expected Bearer)",
-        ))?;
-    Ok(token.to_string())
 }
 
 #[cfg(test)]
@@ -238,18 +347,27 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_dpop_valid() {
+        let (token, scheme) = extract_token(Some("DPoP my.dpop.token")).unwrap();
+        assert_eq!(token, "my.dpop.token");
+        assert_eq!(scheme, AuthScheme::DPoP);
+
+        let (token2, scheme2) = extract_token(Some("dpop my.other.dpop.token")).unwrap();
+        assert_eq!(token2, "my.other.dpop.token");
+        assert_eq!(scheme2, AuthScheme::DPoP);
+    }
+
+    #[test]
     fn test_unauthorized_response_missing_header() {
-        let resp = unauthorized_response(StatusCode::UNAUTHORIZED, None);
+        let resp = unauthorized_response("Bearer", StatusCode::UNAUTHORIZED, None);
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            resp.headers().get("www-authenticate").unwrap(),
-            "Bearer"
-        );
+        assert_eq!(resp.headers().get("www-authenticate").unwrap(), "Bearer");
     }
 
     #[test]
     fn test_unauthorized_response_invalid_token() {
         let resp = unauthorized_response(
+            "Bearer",
             StatusCode::UNAUTHORIZED,
             Some(("invalid_token", "token expired")),
         );
@@ -257,6 +375,17 @@ mod tests {
         assert_eq!(
             resp.headers().get("www-authenticate").unwrap(),
             "Bearer error=\"invalid_token\", error_description=\"token expired\""
+        );
+
+        let dpop_resp = unauthorized_response(
+            "DPoP",
+            StatusCode::UNAUTHORIZED,
+            Some(("invalid_dpop_proof", "proof expired")),
+        );
+        assert_eq!(dpop_resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            dpop_resp.headers().get("www-authenticate").unwrap(),
+            "DPoP error=\"invalid_dpop_proof\", error_description=\"proof expired\""
         );
     }
 }

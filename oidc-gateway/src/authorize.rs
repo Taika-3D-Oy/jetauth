@@ -150,7 +150,43 @@ pub async fn handle(
     issuer: &str,
     headers: &http::HeaderMap,
 ) -> Result<Response<String>, String> {
-    let params = util::parse_query(query);
+    let query_params = util::parse_query(query);
+    let mut params = query_params.clone();
+    let query_get = |key: &str| -> Option<&str> {
+        query_params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+
+    let mut used_par = false;
+    if let Some(req_uri) = query_get("request_uri") {
+        if !req_uri.starts_with("urn:ietf:params:oauth:request_uri:") {
+            return Err("invalid request_uri parameter format".into());
+        }
+        let par_entry = store::get_pushed_auth_request(req_uri)
+            .await?
+            .ok_or_else(|| "invalid or expired request_uri".to_string())?;
+        let _ = store::delete_pushed_auth_request(req_uri).await;
+
+        if par_entry.expires_at < store::unix_now() {
+            return Err("request_uri has expired".into());
+        }
+
+        if let Some(qid) = query_get("client_id") {
+            if qid != par_entry.client_id {
+                return Err("client_id in authorization request does not match request_uri".into());
+            }
+        }
+
+        for (k, v) in par_entry.parameters {
+            if !params.iter().any(|(pk, _)| pk == &k) {
+                params.push((k, v));
+            }
+        }
+        used_par = true;
+    }
+
     let get = |key: &str| -> Option<&str> {
         params
             .iter()
@@ -240,6 +276,10 @@ pub async fn handle(
         None => return Err(format!("unknown client_id: {client_id}")),
     };
 
+    if client.require_pushed_authorization_requests && !used_par {
+        return Err("client is required to use pushed authorization requests (PAR)".into());
+    }
+
     // PKCE is required for public third-party clients; optional for confidential clients and first-party clients
     if !client.first_party && client.client_secret.is_none() && code_challenge.is_none() {
         return Err("missing code_challenge (PKCE required for public clients)".into());
@@ -302,9 +342,12 @@ pub async fn handle(
                     let already_consented = if prompt == "consent" {
                         false
                     } else {
-                        store::has_user_consented(&user.id, client_id, scope).await.unwrap_or(false)
+                        store::has_user_consented(&user.id, client_id, scope)
+                            .await
+                            .unwrap_or(false)
                     };
-                    let needs_consent = prompt == "consent" || (!is_first_party && !already_consented);
+                    let needs_consent =
+                        prompt == "consent" || (!is_first_party && !already_consented);
 
                     let code = store::random_hex(32);
                     let acr = crate::login::acr_from_amr(&sso.amr);
@@ -398,7 +441,11 @@ pub async fn handle(
             .or_else(|| login_hint.filter(|h| !h.is_empty()).map(|h| h.to_string())),
         created_at: store::unix_now(),
         needs_consent,
-        prompt: if prompt.is_empty() { None } else { Some(prompt.to_string()) },
+        prompt: if prompt.is_empty() {
+            None
+        } else {
+            Some(prompt.to_string())
+        },
     };
     store::save_auth_session(&session_id, &session).await?;
 
@@ -544,5 +591,98 @@ mod tests {
         let raw = r#"{"id_token": {"acr": {"value": "single"}}}"#;
         let result = parse_claims_param(Some(raw)).unwrap();
         assert_eq!(result.acr_values, vec!["single"]);
+    }
+
+    #[test]
+    fn test_authorize_par_enforced_rejects_direct_query() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "par-enforced-client".to_string(),
+                client_secret: None,
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "PAR Enforced Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("none".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: true,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let headers = http::HeaderMap::new();
+            let query = "client_id=par-enforced-client&redirect_uri=https://app.example.com/cb&response_type=code&scope=openid";
+            let res = handle(query, "https://auth.example.com", &headers).await;
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("pushed authorization requests"));
+        });
+    }
+
+    #[test]
+    fn test_authorize_par_success_flow() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "par-flow-client".to_string(),
+                client_secret: None,
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "PAR Flow Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("none".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: true,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let req_uri = "urn:ietf:params:oauth:request_uri:abc1234567890";
+            let mut params = std::collections::HashMap::new();
+            params.insert("client_id".to_string(), "par-flow-client".to_string());
+            params.insert(
+                "redirect_uri".to_string(),
+                "https://app.example.com/cb".to_string(),
+            );
+            params.insert("response_type".to_string(), "code".to_string());
+            params.insert("scope".to_string(), "openid".to_string());
+            params.insert("state".to_string(), "par_state_999".to_string());
+            params.insert(
+                "code_challenge".to_string(),
+                "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string(),
+            );
+            params.insert("code_challenge_method".to_string(), "S256".to_string());
+
+            let now = store::unix_now();
+            let par_entry = store::PushedAuthRequest {
+                client_id: "par-flow-client".to_string(),
+                parameters: params,
+                created_at: now,
+                expires_at: now + 90,
+            };
+            store::save_pushed_auth_request(req_uri, &par_entry, 90)
+                .await
+                .unwrap();
+
+            let headers = http::HeaderMap::new();
+            let query = format!("client_id=par-flow-client&request_uri={req_uri}");
+            let res = handle(&query, "https://auth.example.com", &headers).await;
+            assert!(res.is_ok());
+            let resp = res.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            assert!(resp.body().contains("<!DOCTYPE html>") || resp.body().contains("<html"));
+
+            // Verify the PAR entry was consumed (single-use)
+            let consumed = store::get_pushed_auth_request(req_uri).await.unwrap();
+            assert!(consumed.is_none());
+        });
     }
 }

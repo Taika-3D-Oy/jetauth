@@ -1,7 +1,7 @@
-use maud::html;
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::format_timestamp;
 use http::Response;
+use maud::html;
 
 pub async fn render_account_page(session: &AdminSession) -> Response<String> {
     let passkeys = &session.user.passkey_credentials;

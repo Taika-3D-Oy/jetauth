@@ -1,8 +1,8 @@
-use maud::{html, Markup};
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::format_timestamp;
 use crate::store::{self, Hook, HookVersion};
 use http::Response;
+use maud::{Markup, html};
 
 pub async fn render_hooks_page(session: &AdminSession) -> Response<String> {
     let hooks = store::list_hooks().await.unwrap_or_default();
@@ -103,7 +103,11 @@ pub async fn render_hook_editor_page(
         "// Rhai Hook Script\n// Available in script: user (map), event (string), tenants (array)\n// Functions: set_superadmin(bool), add_to_tenant(id, role), create_tenant(id, name, display), deny(msg), log(msg)\n\nif user.email.ends_with(\"@example.com\") {\n    set_superadmin(true);\n    log(\"Promoted user from example.com\");\n}\n"
     );
 
-    let title = if is_new { "New Lifecycle Hook" } else { "Edit Hook" };
+    let title = if is_new {
+        "New Lifecycle Hook"
+    } else {
+        "Edit Hook"
+    };
 
     let content = html! {
         div class="breadcrumb" {

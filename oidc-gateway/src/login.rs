@@ -73,7 +73,9 @@ pub async fn login_page(session_id: &str, error: Option<&str>) -> Response<Strin
     let logo_html = crate::theme::render_logo(&theme);
     let footer_html = crate::theme::render_footer(
         &theme,
-        Some(r#"<a href="/account" style="color:inherit;text-decoration:none">Manage your account</a>"#),
+        Some(
+            r#"<a href="/account" style="color:inherit;text-decoration:none">Manage your account</a>"#,
+        ),
     );
 
     let error_html = match error {
@@ -564,13 +566,21 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
     // Try TOTP code first
     if let Some(step) = crate::totp::verify_totp_step(totp_secret, code.trim()) {
         let replay_key = format!("totp_used:{}:{}", user.id, step);
-        if store::record_totp_used(&replay_key, 90).await.unwrap_or(true) {
+        if store::record_totp_used(&replay_key, 90)
+            .await
+            .unwrap_or(true)
+        {
             store::delete_mfa_pending(mfa_token).await?;
             let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
             let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
-            return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip).await;
+            return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip)
+                .await;
         } else {
-            return Ok(login_page(session_id, Some("TOTP code already used. Please wait for the next code.")).await);
+            return Ok(login_page(
+                session_id,
+                Some("TOTP code already used. Please wait for the next code."),
+            )
+            .await);
         }
     }
 
@@ -770,13 +780,10 @@ pub async fn complete_login_with_amr(
     let needs_consent = if force_consent {
         true
     } else if session.needs_consent {
-        let already_consented = crate::store::has_user_consented(
-            &user.id,
-            &session.client_id,
-            &session.scope,
-        )
-        .await
-        .unwrap_or(false);
+        let already_consented =
+            crate::store::has_user_consented(&user.id, &session.client_id, &session.scope)
+                .await
+                .unwrap_or(false);
         !already_consented
     } else {
         false
@@ -808,8 +815,12 @@ pub async fn complete_login_with_amr(
     crate::store::save_auth_code(&code, &auth_code).await?;
 
     let issuer = crate::get_issuer();
-    let redirect_url =
-        crate::util::build_auth_code_redirect(&session.redirect_uri, &code, &session.state, &issuer);
+    let redirect_url = crate::util::build_auth_code_redirect(
+        &session.redirect_uri,
+        &code,
+        &session.state,
+        &issuer,
+    );
 
     // Set account session cookie so the user can visit /account later
     let mut builder = Response::builder()
