@@ -2012,7 +2012,10 @@ mod tests {
         let session = tenant_admin_session();
 
         assert!(authorize_admin_route(&session, &Method::GET, "/admin/tenants/tenant_a").is_ok());
-        assert!(authorize_admin_route(&session, &Method::POST, "/admin/tenants/tenant_a/invite").is_ok());
+        assert!(
+            authorize_admin_route(&session, &Method::POST, "/admin/tenants/tenant_a/invite")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2023,7 +2026,8 @@ mod tests {
         assert!(other_tenant.is_err());
         assert_eq!(other_tenant.unwrap_err().status(), StatusCode::FORBIDDEN);
 
-        let delete_tenant = authorize_admin_route(&session, &Method::DELETE, "/admin/tenants/tenant_a");
+        let delete_tenant =
+            authorize_admin_route(&session, &Method::DELETE, "/admin/tenants/tenant_a");
         assert!(delete_tenant.is_err());
         assert_eq!(delete_tenant.unwrap_err().status(), StatusCode::FORBIDDEN);
     }

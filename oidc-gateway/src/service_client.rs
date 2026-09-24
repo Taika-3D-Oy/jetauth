@@ -141,7 +141,10 @@ mod tests {
             "exp": now
         });
 
-        assert_eq!(validate_token_times(&claims, now), Err("token expired".into()));
+        assert_eq!(
+            validate_token_times(&claims, now),
+            Err("token expired".into())
+        );
     }
 }
 
