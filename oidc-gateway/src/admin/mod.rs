@@ -1045,10 +1045,10 @@ fn authorize_admin_route(
         return Ok(());
     }
 
-    if is_superadmin_only_route(path) {
+    if !is_allowed_tenant_admin_route(method, path) {
         return Err(error_response(
             StatusCode::FORBIDDEN,
-            "Access denied: superadmin privileges required.",
+            "Access denied: superadmin privileges required for this route.",
         ));
     }
 
@@ -1059,48 +1059,72 @@ fn authorize_admin_route(
                 "Access denied: tenant administrator privileges required for this tenant.",
             ));
         }
-
-        if *method == Method::DELETE && path == format!("/admin/tenants/{tenant_id}") {
-            return Err(error_response(
-                StatusCode::FORBIDDEN,
-                "Access denied: superadmin privileges required.",
-            ));
-        }
     }
 
     Ok(())
 }
 
-fn is_superadmin_only_route(path: &str) -> bool {
+fn is_allowed_tenant_admin_route(method: &Method, path: &str) -> bool {
+    if matches!(
+        (method, path),
+        (&Method::GET, "/admin")
+            | (&Method::POST, "/admin/tenant/switch")
+            | (&Method::GET, "/admin/account")
+            | (&Method::POST, "/admin/account/passkeys/register-options")
+            | (&Method::POST, "/admin/account/passkeys/register-complete")
+    ) {
+        return true;
+    }
+
+    if path.starts_with("/admin/account/passkeys/") && *method == Method::DELETE {
+        return true;
+    }
+
     matches!(
-        path,
-        "/admin/tenants"
-            | "/admin/tenants/modal/new"
-            | "/admin/clients"
-            | "/admin/clients/modal/new"
-            | "/admin/users"
-            | "/admin/users/search"
-            | "/admin/identity-providers"
-            | "/admin/identity-providers/modal/new"
-            | "/admin/hooks"
-            | "/admin/hooks/new"
-            | "/admin/settings"
-            | "/admin/audit"
-            | "/admin/audit/table"
-    ) || path.starts_with("/admin/clients/")
-        || path.starts_with("/admin/users/")
-        || path.starts_with("/admin/identity-providers/")
-        || path.starts_with("/admin/hooks/")
+        tenant_route_access(method, path),
+        Some(TenantRouteAccess::View | TenantRouteAccess::Invite | TenantRouteAccess::RemoveMember)
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TenantRouteAccess {
+    View,
+    Invite,
+    RemoveMember,
 }
 
 fn tenant_route_id(path: &str) -> Option<&str> {
-    let rest = path.strip_prefix("/admin/tenants/")?;
-    let tenant_id = rest.split('/').next()?;
+    let (tenant_id, _) = tenant_route_access_parts(path)?;
     if tenant_id.is_empty() {
         None
     } else {
         Some(tenant_id)
     }
+}
+
+fn tenant_route_access(method: &Method, path: &str) -> Option<TenantRouteAccess> {
+    let (tenant_id, remainder) = tenant_route_access_parts(path)?;
+    if tenant_id.is_empty() {
+        return None;
+    }
+
+    match (method, remainder) {
+        (&Method::GET, None) => Some(TenantRouteAccess::View),
+        (&Method::POST, Some("invite")) => Some(TenantRouteAccess::Invite),
+        (&Method::DELETE, Some(member_path)) if member_path.starts_with("members/") => {
+            Some(TenantRouteAccess::RemoveMember)
+        }
+        _ => None,
+    }
+}
+
+fn tenant_route_access_parts(path: &str) -> Option<(&str, Option<&str>)> {
+    let rest = path.strip_prefix("/admin/tenants/")?;
+    let (tenant_id, remainder) = match rest.split_once('/') {
+        Some((tenant_id, remainder)) => (tenant_id, Some(remainder)),
+        None => (rest, None),
+    };
+    Some((tenant_id, remainder))
 }
 
 fn verify_admin_csrf(
@@ -2030,6 +2054,14 @@ mod tests {
             authorize_admin_route(&session, &Method::DELETE, "/admin/tenants/tenant_a");
         assert!(delete_tenant.is_err());
         assert_eq!(delete_tenant.unwrap_err().status(), StatusCode::FORBIDDEN);
+
+        let unknown_subroute =
+            authorize_admin_route(&session, &Method::GET, "/admin/tenants/tenant_a/settings");
+        assert!(unknown_subroute.is_err());
+        assert_eq!(
+            unknown_subroute.unwrap_err().status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]
