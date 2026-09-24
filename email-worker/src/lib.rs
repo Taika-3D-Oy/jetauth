@@ -288,13 +288,13 @@ mod ses {
 
         let status = incoming.status();
         let mut body_bytes = Vec::new();
-        if let Ok(inc_body) = incoming.consume() {
-            if let Ok(in_stream) = inc_body.stream() {
-                loop {
-                    match in_stream.blocking_read(65536) {
-                        Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
-                        _ => break,
-                    }
+        if let Ok(inc_body) = incoming.consume()
+            && let Ok(in_stream) = inc_body.stream()
+        {
+            loop {
+                match in_stream.blocking_read(65536) {
+                    Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
+                    _ => break,
                 }
             }
         }

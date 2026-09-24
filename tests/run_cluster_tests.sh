@@ -31,17 +31,17 @@ BASE_URL="${BASE_URL:-http://localhost:8000}"
 export KUBE_NS_FLAG="${KUBE_NS_FLAG:-}"
 export KUBE_CTX_FLAG="${KUBE_CTX_FLAG:-}"
 
-# Auto-detect lattice-id YAML file from deploy/ directory.
+# Auto-detect workload YAML file from deploy/ directory.
 auto_detect_yaml() {
   if [[ -z "${LATTICE_ID_YAML:-}" ]]; then
     for f in "$ROOT"/deploy/workloaddeployment*.yaml; do
-      if [[ -f "$f" ]] && grep -q "lattice-id" "$f" 2>/dev/null; then
+      if [[ -f "$f" ]] && (grep -q "jetauth" "$f" 2>/dev/null || grep -q "lattice-id" "$f" 2>/dev/null); then
         LATTICE_ID_YAML="$f"
         break
       fi
     done
   fi
-  log "Using lattice-id YAML: ${LATTICE_ID_YAML:-<not found>}"
+  log "Using workload YAML: ${LATTICE_ID_YAML:-<not found>}"
 }
 
 # ── Cluster reset ────────────────────────────────────────────

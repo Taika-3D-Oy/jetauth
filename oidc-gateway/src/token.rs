@@ -14,7 +14,7 @@ fn token_error(status: StatusCode, error: &str, description: &str) -> Response<S
         .header("cache-control", "no-store")
         .header("pragma", "no-cache");
     if status == StatusCode::UNAUTHORIZED {
-        builder = builder.header("www-authenticate", "Basic realm=\"lattice-id\"");
+        builder = builder.header("www-authenticate", "Basic realm=\"jetauth\"");
     }
     builder
         .body(serde_json::to_string(&body).unwrap_or_default())

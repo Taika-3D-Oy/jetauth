@@ -75,13 +75,11 @@ echo ""
 
 # Deploy if requested
 if [[ "$DEPLOY" == "true" ]]; then
-  echo "  Deploying single-region cluster..."
-  if [[ -f "$PROJECT_DIR/deploy/deploy-local.sh" ]]; then
-    bash "$PROJECT_DIR/deploy/deploy-local.sh"
-  else
-    echo "  ERROR: deploy/deploy-local.sh not found"
+  echo "  Deploying workload..."
+  kubectl apply -f "$PROJECT_DIR/deploy/workloaddeployment-local.yaml" || {
+    echo "  ERROR: failed to apply deploy/workloaddeployment-local.yaml"
     exit 1
-  fi
+  }
   echo ""
 fi
 

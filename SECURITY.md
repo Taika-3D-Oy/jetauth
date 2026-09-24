@@ -1,12 +1,23 @@
-# Lattice-ID Security Architecture & Defense-in-Depth Model
+# JetAuth Security Architecture & Defense-in-Depth Model
 
-This document outlines the **3-Tier Defense-in-Depth Security Model** protecting Lattice-ID, its underlying storage layer (Lattice-DB), and the messaging fabric (NATS JetStream).
+This document outlines the **3-Tier Defense-in-Depth Security Model** protecting JetAuth (formerly Lattice-ID), its co-located storage layer ([jetcache](https://github.com/Taika-3D-Oy/jetcache), formerly Lattice-DB), and the messaging fabric (NATS JetStream).
+
+---
+
+## Reporting a Vulnerability
+
+If you discover a security vulnerability in JetAuth, please report it privately:
+
+- **GitHub Advisory**: Use [GitHub Private Vulnerability Reporting](https://github.com/Taika-3D-Oy/jetauth/security/advisories/new).
+- **Email**: Send details and reproduction steps to `security@taika3d.com`.
+
+Please **do not** open public GitHub issues for security vulnerabilities. We will acknowledge receipt within 48 hours and coordinate responsible disclosure.
 
 ---
 
 ## 1. High-Level Architecture Overview
 
-Security in Lattice-ID is enforced across three distinct, complementary layers. No single layer represents a single point of security failure.
+Security in JetAuth is enforced across three distinct, complementary layers. No single layer represents a single point of security failure.
 
 ```
  ┌─────────────────────────────────────────────────────────────────────────┐
@@ -236,4 +247,4 @@ The physical and infrastructure layer guarantees data durability, physical secur
 | **Direct NATS State Inspection** | Tier 1 (Lattice-DB) | High-sensitivity tables (`users`, `credentials`) are stored as AES-256-GCM ciphertext in memory before hitting NATS. |
 | **Unauthorized Client / User Edit** | Tier 1 (Lattice-ID) | Operations require Superadmin OIDC session or Bearer token; all mutations are recorded to append-only `lid-audit`. |
 | **Stolen Refresh Token Replay** | Tier 1 (Token Engine) | Refresh token family reuse detection immediately terminates all active sessions for that token family. |
-| **Man-in-the-Middle (MitM) Attack** | Tier 1 & 2 (TLS / PKCE / DPoP Roadmap) | Mutual TLS 1.3 in transit, PKCE S256 challenge validation (with DPoP proof-of-possession planned). |
+| **Man-in-the-Middle (MitM) Attack** | Tier 1 & 2 (TLS / PKCE / DPoP) | Mutual TLS 1.3 in transit, PKCE S256 challenge validation, and DPoP proof-of-possession (RFC 9449). |

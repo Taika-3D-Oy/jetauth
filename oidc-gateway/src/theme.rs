@@ -456,25 +456,25 @@ pub fn render_head_tags(theme: &ClientTheme) -> String {
     let mut head = String::new();
 
     // Favicon
-    if let Some(fav) = &theme.favicon_url {
-        if util::is_safe_url(fav) {
-            head.push_str(&format!(
-                r#"<link rel="icon" href="{}">"#,
-                util::html_escape(fav)
-            ));
-            head.push('\n');
-        }
+    if let Some(fav) = &theme.favicon_url
+        && util::is_safe_url(fav)
+    {
+        head.push_str(&format!(
+            r#"<link rel="icon" href="{}">"#,
+            util::html_escape(fav)
+        ));
+        head.push('\n');
     }
 
     // Custom Webfont
-    if let Some(font_url) = &theme.font_url {
-        if util::is_safe_url(font_url) {
-            head.push_str(&format!(
+    if let Some(font_url) = &theme.font_url
+        && util::is_safe_url(font_url)
+    {
+        head.push_str(&format!(
                 r#"<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="{}">"#,
                 util::html_escape(font_url)
             ));
-            head.push('\n');
-        }
+        head.push('\n');
     }
 
     head
@@ -540,14 +540,14 @@ pub fn render_css_variables(theme: &ClientTheme) -> String {
 "#
     );
 
-    if let Some(bg_img) = &theme.background_image_url {
-        if util::is_safe_url(bg_img) {
-            css.push_str(&format!(
+    if let Some(bg_img) = &theme.background_image_url
+        && util::is_safe_url(bg_img)
+    {
+        css.push_str(&format!(
                 r#"body {{ background-image: url("{}"); background-size: cover; background-position: center; }}"#,
                 util::html_escape(bg_img)
             ));
-            css.push('\n');
-        }
+        css.push('\n');
     }
 
     if let Some(custom) = &theme.custom_css {
@@ -585,37 +585,37 @@ pub fn render_footer(theme: &ClientTheme, extra_links: Option<&str>) -> String {
         parts.push(extra.to_string());
     }
 
-    if let Some(terms) = &theme.terms_url {
-        if util::is_safe_url(terms) {
-            parts.push(format!(
+    if let Some(terms) = &theme.terms_url
+        && util::is_safe_url(terms)
+    {
+        parts.push(format!(
                 r#"<a href="{}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">Terms</a>"#,
                 util::html_escape(terms)
             ));
-        }
     }
 
-    if let Some(privacy) = &theme.privacy_url {
-        if util::is_safe_url(privacy) {
-            parts.push(format!(
+    if let Some(privacy) = &theme.privacy_url
+        && util::is_safe_url(privacy)
+    {
+        parts.push(format!(
                 r#"<a href="{}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">Privacy</a>"#,
                 util::html_escape(privacy)
             ));
-        }
     }
 
-    if let Some(help) = &theme.help_url {
-        if util::is_safe_url(help) {
-            parts.push(format!(
+    if let Some(help) = &theme.help_url
+        && util::is_safe_url(help)
+    {
+        parts.push(format!(
                 r#"<a href="{}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">Help</a>"#,
                 util::html_escape(help)
             ));
-        }
     }
 
-    if let Some(custom_foot) = &theme.footer_text {
-        if !custom_foot.trim().is_empty() {
-            parts.push(util::html_escape(custom_foot));
-        }
+    if let Some(custom_foot) = &theme.footer_text
+        && !custom_foot.trim().is_empty()
+    {
+        parts.push(util::html_escape(custom_foot));
     }
 
     if !theme.hide_powered_by {

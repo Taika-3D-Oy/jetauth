@@ -8,10 +8,10 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "1.13.0"
+version = "2.0.0-rc.1"
 authors = ["Taika 3D Oy"]
-description = "NATS-native OIDC identity provider for wasmCloud"
-repository = "https://github.com/Taika-3D-Oy/lattice-id"
+description = "NATS-native OIDC identity provider for wasmCloud and WebAssembly (formerly lattice-id)"
+repository = "https://github.com/Taika-3D-Oy/jetauth"
 license = "Apache-2.0"
 
 [workspace.dependencies]

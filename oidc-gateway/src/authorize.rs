@@ -176,10 +176,10 @@ pub async fn handle(
             return Err("request_uri has expired".into());
         }
 
-        if let Some(qid) = query_get("client_id") {
-            if qid != par_entry.client_id {
-                return Err("client_id in authorization request does not match request_uri".into());
-            }
+        if let Some(qid) = query_get("client_id")
+            && qid != par_entry.client_id
+        {
+            return Err("client_id in authorization request does not match request_uri".into());
         }
 
         // RFC 9126 §4: client MUST NOT send parameters other than client_id and request_uri
@@ -308,11 +308,8 @@ pub async fn handle(
     } else {
         None
     };
-    let idp_session = idp_session.filter(|s| {
-        max_age.map_or(true, |age| {
-            store::unix_now().saturating_sub(s.auth_time) <= age
-        })
-    });
+    let idp_session = idp_session
+        .filter(|s| max_age.is_none_or(|age| store::unix_now().saturating_sub(s.auth_time) <= age));
 
     if prompt == "none" && idp_session.is_none() {
         return Ok(authorize_error_redirect(
@@ -369,7 +366,7 @@ pub async fn handle(
     if let Some(ref sso) = idp_session {
         let hint_matches = validated_hint
             .as_ref()
-            .map_or(true, |hint| hint.user_id == sso.user_id);
+            .is_none_or(|hint| hint.user_id == sso.user_id);
 
         let acr_satisfied = acr_values.is_empty()
             || acr_values.iter().all(|v| {
@@ -380,92 +377,88 @@ pub async fn handle(
                 }
             });
 
-        if hint_matches && acr_satisfied {
-            if let Ok(Some(user)) = store::get_user(&sso.user_id).await {
-                if user.status == "active" {
-                    let builtin_clients = ["lid-admin", "lid-default"];
-                    let is_first_party = client.first_party || builtin_clients.contains(&client_id);
-                    let already_consented = if prompt == "consent" {
-                        false
-                    } else {
-                        store::has_user_consented(&user.id, client_id, scope)
-                            .await
-                            .unwrap_or(false)
-                    };
-                    let needs_consent =
-                        prompt == "consent" || (!is_first_party && !already_consented);
+        if hint_matches
+            && acr_satisfied
+            && let Ok(Some(user)) = store::get_user(&sso.user_id).await
+            && user.status == "active"
+        {
+            let builtin_clients = ["lid-admin", "lid-default"];
+            let is_first_party = client.first_party || builtin_clients.contains(&client_id);
+            let already_consented = if prompt == "consent" {
+                false
+            } else {
+                store::has_user_consented(&user.id, client_id, scope)
+                    .await
+                    .unwrap_or(false)
+            };
+            let needs_consent = prompt == "consent" || (!is_first_party && !already_consented);
 
-                    let code = store::random_hex(32);
-                    let sid = store::random_hex(16);
-                    let acr = crate::login::acr_from_amr(&sso.amr);
-                    let auth_code = store::AuthCode {
-                        user_id: user.id.clone(),
-                        client_id: client_id.to_string(),
-                        redirect_uri: redirect_uri.to_string(),
-                        code_challenge: code_challenge.unwrap_or("").to_string(),
-                        code_challenge_method: code_challenge_method.to_string(),
-                        nonce: nonce.to_string(),
-                        scope: scope.to_string(),
-                        auth_time: sso.auth_time,
-                        amr: sso.amr.clone(),
-                        acr,
-                        requested_id_token_claims: claims_request.id_token_claims.clone(),
-                        requested_userinfo_claims: claims_request.userinfo_claims.clone(),
-                        extra_claims: vec![],
-                        csrf_token: String::new(),
-                        expires_at: store::unix_now() + 300,
-                        state: state.to_string(),
-                        sid: Some(sid),
-                    };
-                    store::save_auth_code(&code, &auth_code).await?;
-                    let _ = store::log_audit("sso_reuse", &user.id, &user.id, client_id).await;
+            let code = store::random_hex(32);
+            let sid = store::random_hex(16);
+            let acr = crate::login::acr_from_amr(&sso.amr);
+            let auth_code = store::AuthCode {
+                user_id: user.id.clone(),
+                client_id: client_id.to_string(),
+                redirect_uri: redirect_uri.to_string(),
+                code_challenge: code_challenge.unwrap_or("").to_string(),
+                code_challenge_method: code_challenge_method.to_string(),
+                nonce: nonce.to_string(),
+                scope: scope.to_string(),
+                auth_time: sso.auth_time,
+                amr: sso.amr.clone(),
+                acr,
+                requested_id_token_claims: claims_request.id_token_claims.clone(),
+                requested_userinfo_claims: claims_request.userinfo_claims.clone(),
+                extra_claims: vec![],
+                csrf_token: String::new(),
+                expires_at: store::unix_now() + 300,
+                state: state.to_string(),
+                sid: Some(sid),
+            };
+            store::save_auth_code(&code, &auth_code).await?;
+            let _ = store::log_audit("sso_reuse", &user.id, &user.id, client_id).await;
 
-                    // Slide the IdP session TTL (rolling window).
-                    let refreshed_idp =
-                        crate::account::refresh_idp_session_cookie_header(headers).await;
-                    let account_cookie = crate::account::create_session_cookie(&user.id).await.ok();
+            // Slide the IdP session TTL (rolling window).
+            let refreshed_idp = crate::account::refresh_idp_session_cookie_header(headers).await;
+            let account_cookie = crate::account::create_session_cookie(&user.id).await.ok();
 
-                    if needs_consent {
-                        if prompt == "none" {
-                            return Ok(authorize_error_redirect(
-                                redirect_uri,
-                                state,
-                                "consent_required",
-                                "interaction required: client requires user consent",
-                                issuer,
-                            ));
-                        }
-                        let resp =
-                            crate::login::consent_page(&code, &auth_code, &client, &user).await;
-                        let (mut parts, body) = resp.into_parts();
-                        if let Some(c) = refreshed_idp {
-                            if let Ok(val) = c.parse() {
-                                parts.headers.append("set-cookie", val);
-                            }
-                        }
-                        if let Some(c) = account_cookie {
-                            if let Ok(val) = c.parse() {
-                                parts.headers.append("set-cookie", val);
-                            }
-                        }
-                        return Ok(Response::from_parts(parts, body));
-                    }
-
-                    let redirect_url =
-                        util::build_auth_code_redirect(redirect_uri, &code, state, issuer);
-                    let mut builder = Response::builder()
-                        .status(StatusCode::FOUND)
-                        .header("location", &redirect_url)
-                        .header("cache-control", "no-store");
-                    if let Some(c) = refreshed_idp {
-                        builder = builder.header("set-cookie", c);
-                    }
-                    if let Some(c) = account_cookie {
-                        builder = builder.header("set-cookie", c);
-                    }
-                    return Ok(builder.body(String::new()).unwrap());
+            if needs_consent {
+                if prompt == "none" {
+                    return Ok(authorize_error_redirect(
+                        redirect_uri,
+                        state,
+                        "consent_required",
+                        "interaction required: client requires user consent",
+                        issuer,
+                    ));
                 }
+                let resp = crate::login::consent_page(&code, &auth_code, &client, &user).await;
+                let (mut parts, body) = resp.into_parts();
+                if let Some(c) = refreshed_idp
+                    && let Ok(val) = c.parse()
+                {
+                    parts.headers.append("set-cookie", val);
+                }
+                if let Some(c) = account_cookie
+                    && let Ok(val) = c.parse()
+                {
+                    parts.headers.append("set-cookie", val);
+                }
+                return Ok(Response::from_parts(parts, body));
             }
+
+            let redirect_url = util::build_auth_code_redirect(redirect_uri, &code, state, issuer);
+            let mut builder = Response::builder()
+                .status(StatusCode::FOUND)
+                .header("location", &redirect_url)
+                .header("cache-control", "no-store");
+            if let Some(c) = refreshed_idp {
+                builder = builder.header("set-cookie", c);
+            }
+            if let Some(c) = account_cookie {
+                builder = builder.header("set-cookie", c);
+            }
+            return Ok(builder.body(String::new()).unwrap());
         }
 
         // If prompt == "none" and session cannot satisfy request, error redirect

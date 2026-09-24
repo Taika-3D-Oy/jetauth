@@ -113,10 +113,10 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
         let mut req_builder = http::Request::builder().uri(&path_query);
 
         for (name, val) in entries {
-            if let Ok(header_name) = http::header::HeaderName::from_bytes(name.as_bytes()) {
-                if let Ok(header_val) = http::header::HeaderValue::from_bytes(&val) {
-                    req_builder = req_builder.header(header_name, header_val);
-                }
+            if let Ok(header_name) = http::header::HeaderName::from_bytes(name.as_bytes())
+                && let Ok(header_val) = http::header::HeaderValue::from_bytes(&val)
+            {
+                req_builder = req_builder.header(header_name, header_val);
             }
         }
 
@@ -221,25 +221,25 @@ async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>,
                 .find(|c| c.starts_with("__lid_cr="))
                 .and_then(|c| c.strip_prefix("__lid_cr="))
         });
-    if let Some(raw) = raw_consistency {
-        if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let Some(revisions_obj) = envelope.get("r").and_then(|r| r.as_object()) {
-                // New format with epoch
-                let epoch = envelope
-                    .get("e")
-                    .and_then(|e| e.as_str())
-                    .map(|s| s.to_string());
-                let revisions: std::collections::HashMap<String, u64> = revisions_obj
-                    .iter()
-                    .filter_map(|(k, v)| v.as_u64().map(|r| (k.clone(), r)))
-                    .collect();
-                store::seed_session_revisions(revisions, epoch);
-            } else if let Ok(revisions) =
-                serde_json::from_value::<std::collections::HashMap<String, u64>>(envelope)
-            {
-                // Legacy format (no epoch) — accept without epoch validation
-                store::seed_session_revisions(revisions, None);
-            }
+    if let Some(raw) = raw_consistency
+        && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(raw)
+    {
+        if let Some(revisions_obj) = envelope.get("r").and_then(|r| r.as_object()) {
+            // New format with epoch
+            let epoch = envelope
+                .get("e")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string());
+            let revisions: std::collections::HashMap<String, u64> = revisions_obj
+                .iter()
+                .filter_map(|(k, v)| v.as_u64().map(|r| (k.clone(), r)))
+                .collect();
+            store::seed_session_revisions(revisions, epoch);
+        } else if let Ok(revisions) =
+            serde_json::from_value::<std::collections::HashMap<String, u64>>(envelope)
+        {
+            // Legacy format (no epoch) — accept without epoch validation
+            store::seed_session_revisions(revisions, None);
         }
     }
 
@@ -398,15 +398,14 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
     }
 
     // IP-based rate limiting (only for endpoints that actually need protection).
-    if remote_ip != "unknown" {
-        if let Ok((false, _)) =
+    if remote_ip != "unknown"
+        && let Ok((false, _)) =
             service_client::check_rate(&format!("ip:{}", remote_ip), 1000, 3600).await
-        {
-            return Ok(error_json(
-                StatusCode::TOO_MANY_REQUESTS,
-                "IP rate limit exceeded",
-            ));
-        }
+    {
+        return Ok(error_json(
+            StatusCode::TOO_MANY_REQUESTS,
+            "IP rate limit exceeded",
+        ));
     }
 
     let auth = parts
@@ -598,16 +597,15 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
             verify_internal_auth(&parts.headers)?;
             // Rate-limit: 60 lookups per minute per calling IP to prevent
             // email-existence enumeration via the cross-region API.
-            if remote_ip != "unknown" {
-                if let Ok((false, _)) =
+            if remote_ip != "unknown"
+                && let Ok((false, _)) =
                     service_client::check_rate(&format!("internal_lookup:{remote_ip}"), 60, 60)
                         .await
-                {
-                    return Ok(error_json(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        "lookup rate limit exceeded",
-                    ));
-                }
+            {
+                return Ok(error_json(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "lookup rate limit exceeded",
+                ));
             }
             handle_internal_lookup(query).await
         }
@@ -1337,11 +1335,17 @@ fn healthz() -> Response<String> {
 /// against a development build to correlate behaviour to a specific commit.
 fn version_response() -> Response<String> {
     let body = serde_json::json!({
-        "name": env!("CARGO_PKG_NAME"),
+        "name": "jetauth",
         "version": env!("CARGO_PKG_VERSION"),
-        "git_sha": option_env!("LATTICE_ID_GIT_SHA").unwrap_or("unknown"),
-        "build_date": option_env!("LATTICE_ID_BUILD_DATE").unwrap_or("unknown"),
-        "rustc": option_env!("LATTICE_ID_RUSTC").unwrap_or("unknown"),
+        "git_sha": option_env!("JETAUTH_GIT_SHA")
+            .or(option_env!("LATTICE_ID_GIT_SHA"))
+            .unwrap_or("unknown"),
+        "build_date": option_env!("JETAUTH_BUILD_DATE")
+            .or(option_env!("LATTICE_ID_BUILD_DATE"))
+            .unwrap_or("unknown"),
+        "rustc": option_env!("JETAUTH_RUSTC")
+            .or(option_env!("LATTICE_ID_RUSTC"))
+            .unwrap_or("unknown"),
     });
     Response::builder()
         .status(StatusCode::OK)

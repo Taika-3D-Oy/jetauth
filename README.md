@@ -1,15 +1,23 @@
-# Lattice-ID
+# JetAuth
 
-Lattice-ID is a NATS-native OIDC provider for wasmCloud, backed by JetStream KV.
+JetAuth (formerly Lattice-ID) is a WebAssembly-native, NATS-powered OpenID Connect (OIDC) & OAuth 2.0 Identity Provider built for wasmCloud and modern cloud-native environments.
 
-Runs as a single wasmCloud WorkloadDeployment with [lattice-db](https://github.com/Taika-3D-Oy/lattice-db) co-located as a service — no extra database, no separate infrastructure. Components communicate with lattice-db over localhost TCP (`127.0.0.1:4080`), and lattice-db persists all state to NATS JetStream KV.
+Runs as a single wasmCloud WorkloadDeployment with [jetcache](https://github.com/Taika-3D-Oy/jetcache) (formerly lattice-db) co-located as a service — no extra database, no external daemon dependencies. Components communicate with jetcache over localhost TCP (`127.0.0.1:4080`), and jetcache persists and replicates all state directly into NATS JetStream KV.
 
 ## Status
 
-**v1.13.0**
+**v2.0.0-rc.1** (Rebranded from `lattice-id` v1.13.0)
 
-- Full OIDC Core 1.0 & OAuth 2.0 conformance and compliance hardening (scope-based PII gating, strict open-redirect & PAR validation, session ID `sid` tracking for back-channel logout)
-- Advanced OAuth 2.0 Security Profiles:
+- **Storage Layer & `jetcache` 2.0 Integration**:
+  - High-performance native prefix scan operations (`kv_prefix` and `kv_prefix_keys`), eliminating N+1 round-trip latency on user listings, client listings, tenant memberships, consents, hooks, and audit logs.
+  - Cascading instance and TCP port discovery (`JETAUTH_*` -> `JETCACHE_*` -> `CACHE_*` -> `LDB_*`).
+  - Seamless backward compatibility with legacy `lattice-db` backends via automatic protocol fallbacks.
+- **Component Model & Architecture**:
+  - Aligned with the **`nats-wasip3` 1.0.0** and **`jetcache` 2.0** ecosystem.
+  - Fully cleaned up WIT interfaces and manifests, removing unused messaging interfaces while maintaining 100% ABI stability for `lattice-id:*` component bindings.
+- **Full OIDC Core 1.0 & OAuth 2.0 Conformance**:
+  - Strict scope-based PII gating (`email`, `profile`), open-redirect prevention, and session ID (`sid`) backchannel logout tracking.
+- **Advanced OAuth 2.0 Security Profiles**:
   - **RFC 9126 Pushed Authorization Requests (PAR)** (`/connect/par`, `/oauth/par`, `/as/par`) with 90s single-use `request_uri` and client enforcement policy
   - **RFC 9449 Demonstrating Proof-of-Possession (DPoP)** sender-constrained access tokens (`cnf: { jkt }`) and proof validation on token and resource (`/userinfo`) endpoints
   - **RFC 7523 `private_key_jwt`** asymmetric client authentication (RS256, ES256) across all token, PAR, revocation, and introspection endpoints
@@ -18,13 +26,13 @@ Runs as a single wasmCloud WorkloadDeployment with [lattice-db](https://github.c
   - **RFC 9207 Issuer Identifier in Authorization Response** (`iss`)
   - **RFC 8414 OAuth 2.0 Authorization Server Metadata** (`/.well-known/oauth-authorization-server`)
   - **RFC 7009 Token Revocation** with authenticated client ownership verification
-- Security hardening: CSRF protection, refresh token absolute lifetime cap, account lockout, rate limiting, consent screen
-- Dedicated RP-initiated logout (`post_logout_redirect_uris`) and Backchannel logout (RFC 8613)
-- Built-in Server-Side Rendered (SSR) Maud + HTMX Admin Panel embedded directly in `oidc-gateway` at `/admin`
-- Dynamic theming engine with 6 trendy built-in presets (`taika-dark`, `taika-light`, `glassmorphic`, `cyberpunk`, `minimal-noir`, `neo-brutalist`) and complete white-labeling: [THEMING.md](THEMING.md)
-- GDPR: user data export (`GET /api/users/:id/export`) and erasure (`DELETE /api/users/:id`)
-- Multi-region design: [MULTI_REGION.md](MULTI_REGION.md)
-- WASI 0.3 / wasmCloud ≥ 2.7.0 Component Model async I/O compatibility (`wasip3 0.7`, `wit-bindgen 0.57`)
+- **Security & Access**:
+  - Passkeys (WebAuthn / FIDO2) for passwordless authentication
+  - TOTP MFA with recovery codes, brute-force protection, account lockout
+  - SSR Maud + HTMX Admin Panel embedded directly at `/admin`
+  - Dynamic theming engine with 6 built-in presets: [THEMING.md](THEMING.md)
+  - GDPR export (`GET /api/users/:id/export`) and erasure (`DELETE /api/users/:id`)
+  - Multi-region routing and replication: [MULTI_REGION.md](MULTI_REGION.md)
 
 ## Workspace Layout
 
@@ -40,39 +48,28 @@ Runs as a single wasmCloud WorkloadDeployment with [lattice-db](https://github.c
 - `kind`, `kubectl`, `helm` for local Kubernetes clusters
 - `docker` for the local OCI registry
 - `curl` and `python3` for integration tests
-- Access to [lattice-db](https://github.com/Taika-3D-Oy/lattice-db) OCI images on GHCR (default: `ghcr.io/taika-3d-oy/lattice-db/storage-service:latest`)
+- Access to [jetcache](https://github.com/Taika-3D-Oy/jetcache) OCI images on GHCR (default: `ghcr.io/taika-3d-oy/jetcache/storage-service:v2.0.0-rc.1`)
 
 ```bash
 rustup target add wasm32-wasip2
 ```
 
-## Local Development
+## Deployment
 
-Lattice-ID requires lattice-db for persistent storage, which means it runs on
-a Kind cluster with the wasmCloud operator — not standalone via `wash dev`.
+JetAuth runs as a single wasmCloud `WorkloadDeployment` with `jetcache` co-located as a sidecar service.
 
-### Deploy a local cluster
-
-```bash
-bash deploy/deploy-local.sh
-```
-
-This script:
-
-- Creates a Kind cluster with a local OCI registry
-- Installs the wasmCloud operator via Helm
-- Deploys a standalone NATS JetStream data-plane (`nats-data`)
-- Builds and pushes lattice-id wasm components (mirrors lattice-db from GHCR)
-- Deploys a single WorkloadDeployment with lattice-db co-located as a service
-- Exposes the HTTP gateway on `http://localhost`
-
-Other commands:
+Declarative deployment manifests are provided in [`deploy/`](deploy/README.md):
 
 ```bash
-bash deploy/deploy-local.sh rebuild   # rebuild + redeploy components
-bash deploy/deploy-local.sh teardown  # destroy the cluster
-bash deploy/deploy-local.sh status    # show cluster status
+# Substitute configuration and apply to your wasmCloud cluster
+sed -e 's|__ISSUER_URL__|http://localhost:8000|' \
+    -e 's|__HOST__|localhost|' \
+    -e 's|__NATS_DATA_URL__|nats:4222|' \
+    -e 's|__EMAIL_PROVIDER__|log|' \
+    deploy/workloaddeployment-ghcr.yaml | kubectl apply -f -
 ```
+
+See [deploy/README.md](deploy/README.md) for details on multi-region, staging, and local development configurations.
 
 ## Bootstrap Behavior
 

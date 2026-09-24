@@ -1,41 +1,44 @@
 apiVersion: runtime.wasmcloud.dev/v1alpha1
 kind: WorkloadDeployment
 metadata:
-  name: lattice-id
+  name: jetauth
   annotations:
-    description: Lattice-ID local-prod — email verification enforced, registration gated
+    description: JetAuth local-prod — email verification enforced, registration gated
 spec:
   replicas: 1
   deployPolicy: RollingUpdate
   template:
     labels:
-      app.kubernetes.io/name: lattice-id
+      app.kubernetes.io/name: jetauth
       app.kubernetes.io/component: authority
     spec:
       service:
-        image: kind-registry:5000/lattice-db/storage-service:dev
+        image: kind-registry:5000/jetcache/storage-service:dev
         maxRestarts: 10
         localResources:
           environment:
             config:
               NATS_DATA_URL: "nats-data:4222"
+              JETAUTH_INSTANCE: "lid"
+              JETCACHE_INSTANCE: "lid"
               LDB_INSTANCE: "lid"
+              JETCACHE_TCP_PORT: "4080"
               LDB_TCP_PORT: "4080"
               LDB_CONSISTENCY_WATCHER_WAIT_STEPS: "2"
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
         - name: oidc-gateway
-          image: kind-registry:5000/lattice-id/oidc-gateway:dev
+          image: kind-registry:5000/jetauth/oidc-gateway:dev
           maxInvocations: 100
           localResources:
             environment:
               config:
                 issuer_url: http://localhost:8000
         - name: password-hasher
-          image: kind-registry:5000/lattice-id/password-hasher:dev
+          image: kind-registry:5000/jetauth/password-hasher:dev
           maxInvocations: 8
         - name: email-worker
-          image: kind-registry:5000/lattice-id/email-worker:dev
+          image: kind-registry:5000/jetauth/email-worker:dev
           maxInvocations: 10
       hostInterfaces:
         - namespace: wasi
@@ -53,6 +56,8 @@ spec:
           interfaces:
             - store
           config:
+            jetauth_instance: "lid"
+            jetcache_instance: "lid"
             ldb_instance: "lid"
             dev_mode: "true"
             require_email_verification: "true"
@@ -69,11 +74,3 @@ spec:
               } else {
                 deny("Registration is not open — contact an administrator");
               }
-        - namespace: wasmcloud
-          package: messaging
-          version: 0.2.0
-          interfaces:
-            - consumer
-          config:
-            subscriptions: ""
-            nats_url: "nats://nats-data:4222"

@@ -844,115 +844,6 @@ pub async fn complete_login_with_amr(
     Ok(builder.body(String::new()).unwrap())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_primary_amr_for_password() {
-        assert_eq!(primary_amr_for_flow("password"), vec!["pwd"]);
-    }
-
-    #[test]
-    fn test_primary_amr_for_unknown_flow() {
-        let amr: Vec<String> = Vec::new();
-        assert_eq!(primary_amr_for_flow("unknown"), amr);
-    }
-
-    #[test]
-    fn test_merge_amr_dedupes() {
-        let result = merge_amr(&["pwd".to_string()], &["mfa", "otp"]);
-        assert_eq!(result, vec!["pwd", "mfa", "otp"]);
-    }
-
-    #[test]
-    fn test_merge_amr_handles_empty_primary() {
-        let result = merge_amr(&[], &["mfa"]);
-        assert_eq!(result, vec!["mfa"]);
-    }
-
-    #[test]
-    fn test_select_acr_mfa() {
-        let session = store::AuthSession {
-            client_id: "test".into(),
-            redirect_uri: "http://localhost".into(),
-            code_challenge: "c".into(),
-            code_challenge_method: "S256".into(),
-            state: "s".into(),
-            scope: "openid".into(),
-            nonce: "n".into(),
-            max_age: None,
-            acr_values: vec![],
-            requested_id_token_claims: vec![],
-            requested_userinfo_claims: vec![],
-            hinted_user_id: None,
-            hinted_email: None,
-            created_at: 0,
-            needs_consent: false,
-            prompt: None,
-            sid: None,
-        };
-        let amr = vec!["pwd".to_string(), "mfa".to_string(), "otp".to_string()];
-        assert_eq!(
-            select_acr(&session, &amr),
-            Some("urn:lattice-id:mfa:totp".to_string())
-        );
-    }
-
-    #[test]
-    fn test_select_acr_no_mfa() {
-        let session = store::AuthSession {
-            client_id: "test".into(),
-            redirect_uri: "http://localhost".into(),
-            code_challenge: "c".into(),
-            code_challenge_method: "S256".into(),
-            state: "s".into(),
-            scope: "openid".into(),
-            nonce: "n".into(),
-            max_age: None,
-            acr_values: vec![],
-            requested_id_token_claims: vec![],
-            requested_userinfo_claims: vec![],
-            hinted_user_id: None,
-            hinted_email: None,
-            created_at: 0,
-            needs_consent: false,
-            prompt: None,
-            sid: None,
-        };
-        let amr = vec!["pwd".to_string()];
-        assert_eq!(select_acr(&session, &amr), None);
-    }
-
-    #[test]
-    fn test_darken_hex() {
-        let darkened = crate::theme::darken_hex("#2563eb");
-        assert!(darkened.starts_with('#'));
-        assert_eq!(darkened.len(), 7);
-    }
-
-    #[test]
-    fn test_darken_hex_invalid_fallback() {
-        let darkened = crate::theme::darken_hex("invalid");
-        assert_eq!(darkened, "#1d4ed8");
-    }
-
-    #[test]
-    fn test_acr_from_amr_with_mfa() {
-        let amr = vec!["pwd".to_string(), "mfa".to_string(), "otp".to_string()];
-        assert_eq!(
-            acr_from_amr(&amr),
-            Some("urn:lattice-id:mfa:totp".to_string())
-        );
-    }
-
-    #[test]
-    fn test_acr_from_amr_without_mfa() {
-        let amr = vec!["pwd".to_string()];
-        assert_eq!(acr_from_amr(&amr), None);
-    }
-}
-
 /// Render the consent page shown to users for third-party / prompt=consent flows.
 /// The page shows what scopes are requested and lets the user approve or deny.
 pub async fn consent_page(
@@ -1147,4 +1038,113 @@ pub async fn handle_consent(body_bytes: &[u8]) -> Result<Response<String>, Strin
         .header("cache-control", "no-store")
         .body(String::new())
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_primary_amr_for_password() {
+        assert_eq!(primary_amr_for_flow("password"), vec!["pwd"]);
+    }
+
+    #[test]
+    fn test_primary_amr_for_unknown_flow() {
+        let amr: Vec<String> = Vec::new();
+        assert_eq!(primary_amr_for_flow("unknown"), amr);
+    }
+
+    #[test]
+    fn test_merge_amr_dedupes() {
+        let result = merge_amr(&["pwd".to_string()], &["mfa", "otp"]);
+        assert_eq!(result, vec!["pwd", "mfa", "otp"]);
+    }
+
+    #[test]
+    fn test_merge_amr_handles_empty_primary() {
+        let result = merge_amr(&[], &["mfa"]);
+        assert_eq!(result, vec!["mfa"]);
+    }
+
+    #[test]
+    fn test_select_acr_mfa() {
+        let session = store::AuthSession {
+            client_id: "test".into(),
+            redirect_uri: "http://localhost".into(),
+            code_challenge: "c".into(),
+            code_challenge_method: "S256".into(),
+            state: "s".into(),
+            scope: "openid".into(),
+            nonce: "n".into(),
+            max_age: None,
+            acr_values: vec![],
+            requested_id_token_claims: vec![],
+            requested_userinfo_claims: vec![],
+            hinted_user_id: None,
+            hinted_email: None,
+            created_at: 0,
+            needs_consent: false,
+            prompt: None,
+            sid: None,
+        };
+        let amr = vec!["pwd".to_string(), "mfa".to_string(), "otp".to_string()];
+        assert_eq!(
+            select_acr(&session, &amr),
+            Some("urn:lattice-id:mfa:totp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_select_acr_no_mfa() {
+        let session = store::AuthSession {
+            client_id: "test".into(),
+            redirect_uri: "http://localhost".into(),
+            code_challenge: "c".into(),
+            code_challenge_method: "S256".into(),
+            state: "s".into(),
+            scope: "openid".into(),
+            nonce: "n".into(),
+            max_age: None,
+            acr_values: vec![],
+            requested_id_token_claims: vec![],
+            requested_userinfo_claims: vec![],
+            hinted_user_id: None,
+            hinted_email: None,
+            created_at: 0,
+            needs_consent: false,
+            prompt: None,
+            sid: None,
+        };
+        let amr = vec!["pwd".to_string()];
+        assert_eq!(select_acr(&session, &amr), None);
+    }
+
+    #[test]
+    fn test_darken_hex() {
+        let darkened = crate::theme::darken_hex("#2563eb");
+        assert!(darkened.starts_with('#'));
+        assert_eq!(darkened.len(), 7);
+    }
+
+    #[test]
+    fn test_darken_hex_invalid_fallback() {
+        let darkened = crate::theme::darken_hex("invalid");
+        assert_eq!(darkened, "#1d4ed8");
+    }
+
+    #[test]
+    fn test_acr_from_amr_with_mfa() {
+        let amr = vec!["pwd".to_string(), "mfa".to_string(), "otp".to_string()];
+        assert_eq!(
+            acr_from_amr(&amr),
+            Some("urn:lattice-id:mfa:totp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_acr_from_amr_without_mfa() {
+        let amr = vec!["pwd".to_string()];
+        assert_eq!(acr_from_amr(&amr), None);
+    }
 }

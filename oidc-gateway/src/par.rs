@@ -33,14 +33,14 @@ pub async fn handle_par(
     };
 
     // If client_id was passed in form, ensure it matches authenticated client
-    if let Some(cid) = get("client_id") {
-        if cid != client.client_id {
-            return Ok(par_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "client_id mismatch between authentication and request body",
-            ));
-        }
+    if let Some(cid) = get("client_id")
+        && cid != client.client_id
+    {
+        return Ok(par_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id mismatch between authentication and request body",
+        ));
     }
 
     // Validate response_type
@@ -82,14 +82,14 @@ pub async fn handle_par(
     }
 
     // Validate PKCE code_challenge if present
-    if let Some(method) = get("code_challenge_method") {
-        if method != "S256" {
-            return Ok(par_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "code_challenge_method must be S256",
-            ));
-        }
+    if let Some(method) = get("code_challenge_method")
+        && method != "S256"
+    {
+        return Ok(par_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "code_challenge_method must be S256",
+        ));
     }
 
     let request_uri = format!(

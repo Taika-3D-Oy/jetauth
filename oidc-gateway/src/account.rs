@@ -130,6 +130,7 @@ pub async fn create_idp_session_cookie(
 }
 
 /// Return the Set-Cookie header value that clears the IdP session cookie from the browser.
+#[allow(dead_code)]
 pub fn clear_idp_session_cookie() -> String {
     let secure = if crate::is_dev_mode() { "" } else { " Secure;" };
     format!("{IDP_COOKIE_NAME}=; HttpOnly;{secure} SameSite=Lax; Path=/; Max-Age=0")
@@ -897,7 +898,7 @@ pub async fn logout(headers: &HeaderMap) -> Response<String> {
     if let Some(token) = parse_cookie(headers, COOKIE_NAME) {
         let _ = store::delete_account_session(&token).await;
     }
-    if let Some(token) = parse_cookie(headers, IDP_COOKIE_NAME) {
+    if let Some(token) = extract_idp_session_token(headers) {
         let _ = store::delete_idp_session(&token).await;
     }
 

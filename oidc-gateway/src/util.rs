@@ -163,10 +163,10 @@ pub fn is_safe_external_url(url: &str) -> Result<(), String> {
     }
 
     // If host is an IP address, check against private/reserved ranges
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if is_private_or_reserved_ip(&ip) {
-            return Err(format!("forbidden target IP: {ip}"));
-        }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>()
+        && is_private_or_reserved_ip(&ip)
+    {
+        return Err(format!("forbidden target IP: {ip}"));
     }
 
     Ok(())

@@ -128,7 +128,7 @@ pub fn verify_registration(
     }
     let rp_id_hash = &auth_data[0..32];
     let expected_rp_hash = Sha256::digest(rp_id().as_bytes());
-    if rp_id_hash != expected_rp_hash.as_slice() {
+    if rp_id_hash != &expected_rp_hash[..] {
         return Err("RP ID hash mismatch".into());
     }
 
@@ -231,7 +231,7 @@ pub fn verify_assertion(
     // 3. Verify RP ID hash
     let rp_id_hash = &auth_data[0..32];
     let expected_rp_hash = Sha256::digest(rp_id().as_bytes());
-    if rp_id_hash != expected_rp_hash.as_slice() {
+    if rp_id_hash != &expected_rp_hash[..] {
         return Err("RP ID hash mismatch".into());
     }
 

@@ -40,12 +40,10 @@ pub async fn authenticate_client(
     }
 
     let auth_client = if let Some((basic_id, basic_secret)) = basic_auth {
-        if let Some(fid) = form_client_id {
-            if fid != basic_id {
-                return Err(
-                    "client_id mismatch between Authorization header and request body".into(),
-                );
-            }
+        if let Some(fid) = form_client_id
+            && fid != basic_id
+        {
+            return Err("client_id mismatch between Authorization header and request body".into());
         }
         let client = store::get_client(&basic_id)
             .await?
@@ -79,12 +77,12 @@ pub async fn authenticate_client(
             .and_then(|v| v.as_str())
             .ok_or("missing sub claim in client_assertion")?;
 
-        if let Some(fid) = form_client_id {
-            if fid != sub {
-                return Err(
-                    "client_id in request body does not match sub claim in client_assertion".into(),
-                );
-            }
+        if let Some(fid) = form_client_id
+            && fid != sub
+        {
+            return Err(
+                "client_id in request body does not match sub claim in client_assertion".into(),
+            );
         }
 
         let client = store::get_client(sub)
@@ -146,10 +144,10 @@ pub async fn authenticate_client(
             return Err("client_assertion validity period is too long (max 10 minutes)".into());
         }
 
-        if let Some(nbf) = payload.get("nbf").and_then(|v| v.as_u64()) {
-            if nbf > now + 60 {
-                return Err("client_assertion not yet valid (nbf in future)".into());
-            }
+        if let Some(nbf) = payload.get("nbf").and_then(|v| v.as_u64())
+            && nbf > now + 60
+        {
+            return Err("client_assertion not yet valid (nbf in future)".into());
         }
 
         let jti = payload
@@ -186,13 +184,13 @@ pub async fn authenticate_client(
         return Err("client authentication failed: missing client credentials".into());
     };
 
-    if let Some(expected) = auth_client.client.token_endpoint_auth_method.as_deref() {
-        if auth_client.auth_method != expected {
-            return Err(format!(
-                "client '{}' must use registered token_endpoint_auth_method '{}', but used '{}'",
-                auth_client.client.client_id, expected, auth_client.auth_method
-            ));
-        }
+    if let Some(expected) = auth_client.client.token_endpoint_auth_method.as_deref()
+        && auth_client.auth_method != expected
+    {
+        return Err(format!(
+            "client '{}' must use registered token_endpoint_auth_method '{}', but used '{}'",
+            auth_client.client.client_id, expected, auth_client.auth_method
+        ));
     }
 
     Ok(auth_client)
@@ -268,8 +266,10 @@ mod tests {
     #[test]
     fn test_verify_secret_confidential_and_public() {
         store::init_config_for_test(true, Some("test_pepper_123456789012345678901234567890"));
-        let mut client = OidcClient::default();
-        client.client_id = "test-client".into();
+        let mut client = OidcClient {
+            client_id: "test-client".into(),
+            ..Default::default()
+        };
 
         // Public client
         assert!(verify_secret(&client, None).is_ok());

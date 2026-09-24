@@ -30,10 +30,10 @@ struct StoredEcKey {
     d: String,
 }
 
+#[allow(dead_code)]
 struct LoadedKeys {
     kid: String,
     rsa_jwk: String,
-    #[allow(dead_code)]
     ec_kid: String,
     ec_jwk: String,
     signing_key: SigningKey<Sha256>,
@@ -276,12 +276,11 @@ pub async fn get_public_keys() -> Result<String, String> {
         "e": rsa_stored.e,
     });
     let mut keys = vec![rsa_val];
-    if let Some(ec_stored) = ec_stored {
-        if let Ok((_, ec_jwk)) = stored_ec_to_parts(&ec_stored) {
-            if let Ok(ec_val) = serde_json::from_str::<serde_json::Value>(&ec_jwk) {
-                keys.push(ec_val);
-            }
-        }
+    if let Some(ec_stored) = ec_stored
+        && let Ok((_, ec_jwk)) = stored_ec_to_parts(&ec_stored)
+        && let Ok(ec_val) = serde_json::from_str::<serde_json::Value>(&ec_jwk)
+    {
+        keys.push(ec_val);
     }
     let t_done = crate::bindings::wasi::clocks::monotonic_clock::now();
     eprintln!(
@@ -290,7 +289,7 @@ pub async fn get_public_keys() -> Result<String, String> {
         (t_ec - t_rsa) / 1_000_000,
         (t_done - t0) / 1_000_000,
     );
-    Ok(serde_json::to_string(&keys).map_err(|e| format!("{e}"))?)
+    serde_json::to_string(&keys).map_err(|e| format!("{e}"))
 }
 
 pub async fn get_kid() -> Result<String, String> {

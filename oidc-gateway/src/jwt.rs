@@ -71,6 +71,7 @@ pub async fn sign_id_token_for_client(
 }
 
 /// Verify an RS256 JWT and return the decoded claims.
+#[allow(dead_code)]
 pub fn verify(
     token: &str,
     verifiers: &[(&str, &VerifyingKey<Sha256>)],

@@ -87,10 +87,10 @@ pub async fn handle_admin_route(
     };
 
     // ── CSRF Protection on state-mutating requests ──
-    if *method == Method::POST || *method == Method::PUT || *method == Method::DELETE {
-        if let Err(resp) = verify_admin_csrf(headers, body, &session) {
-            return resp;
-        }
+    if (*method == Method::POST || *method == Method::PUT || *method == Method::DELETE)
+        && let Err(resp) = verify_admin_csrf(headers, body, &session)
+    {
+        return resp;
     }
 
     // ── Route Dispatch ──
@@ -478,12 +478,11 @@ pub async fn handle_admin_route(
                 };
             }
 
-            if let Some(days_str) = form_value(&form, "idp_session_ttl_days") {
-                if let Ok(days) = days_str.trim().parse::<u64>() {
-                    if days >= 1 && days <= 90 {
-                        settings.idp_session_ttl_seconds = Some(days * 86400);
-                    }
-                }
+            if let Some(days_str) = form_value(&form, "idp_session_ttl_days")
+                && let Ok(days) = days_str.trim().parse::<u64>()
+                && (1..=90).contains(&days)
+            {
+                settings.idp_session_ttl_seconds = Some(days * 86400);
             }
 
             settings.default_theme = Some(def_theme);
@@ -557,14 +556,14 @@ async fn handle_parameterized_route(
                 );
             }
             // e.g. /admin/tenants/{id}/members/{userId}
-            if let Some(user_id) = sub.strip_prefix("members/") {
-                if method == Method::DELETE {
-                    let _ = store::remove_membership(id, user_id).await;
-                    return Response::builder()
-                        .status(StatusCode::OK)
-                        .body(String::new())
-                        .unwrap();
-                }
+            if let Some(user_id) = sub.strip_prefix("members/")
+                && method == Method::DELETE
+            {
+                let _ = store::remove_membership(id, user_id).await;
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .body(String::new())
+                    .unwrap();
             }
         } else {
             // /admin/tenants/{id}
@@ -595,16 +594,17 @@ async fn handle_parameterized_route(
     // ── Single Client Detail & Subroutes ──
     if let Some(rest) = path.strip_prefix("/admin/clients/") {
         if let Some((id, sub)) = rest.split_once('/') {
-            if sub == "rotate-secret" && method == Method::POST {
-                if let Ok(Some(mut client)) = store::get_client(id).await {
-                    let new_raw_secret = store::random_alphanumeric(32);
-                    client.client_secret = Some(store::hmac_client_secret(&new_raw_secret));
-                    let _ = store::save_client(&client).await;
-                    return html_response(format!(
-                        r#"<div class="alert alert-warning" style="margin-top: 12px; padding: 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: var(--radius);"><div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px; font-size: 13px;">⚠️ Copy New Secret (Shown Once)</div><div style="display: flex; align-items: center; gap: 8px;"><span class="mono copy-chip" onclick="copyToClipboard(this, this.innerText)" style="font-size: 13px; font-weight: 600;">{}</span><button class="btn btn-xs btn-primary" onclick="copyToClipboard(this, this.previousElementSibling.innerText)">Copy</button></div></div>"#,
-                        new_raw_secret
-                    ));
-                }
+            if sub == "rotate-secret"
+                && method == Method::POST
+                && let Ok(Some(mut client)) = store::get_client(id).await
+            {
+                let new_raw_secret = store::random_alphanumeric(32);
+                client.client_secret = Some(store::hmac_client_secret(&new_raw_secret));
+                let _ = store::save_client(&client).await;
+                return html_response(format!(
+                    r#"<div class="alert alert-warning" style="margin-top: 12px; padding: 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: var(--radius);"><div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px; font-size: 13px;">⚠️ Copy New Secret (Shown Once)</div><div style="display: flex; align-items: center; gap: 8px;"><span class="mono copy-chip" onclick="copyToClipboard(this, this.innerText)" style="font-size: 13px; font-weight: 600;">{}</span><button class="btn btn-xs btn-primary" onclick="copyToClipboard(this, this.previousElementSibling.innerText)">Copy</button></div></div>"#,
+                    new_raw_secret
+                ));
             }
             if (sub == "redirect-uris" || sub == "post-logout-redirect-uris")
                 && method == Method::POST
@@ -632,10 +632,10 @@ async fn handle_parameterized_route(
             if sub == "settings" && method == Method::POST {
                 let form = parse_form(body);
                 if let Ok(Some(mut client)) = store::get_client(id).await {
-                    if let Some(name) = form_value(&form, "name") {
-                        if !name.trim().is_empty() {
-                            client.name = name.trim().to_string();
-                        }
+                    if let Some(name) = form_value(&form, "name")
+                        && !name.trim().is_empty()
+                    {
+                        client.name = name.trim().to_string();
                     }
                     let gts: Vec<String> = crate::util::form_values(&form, "grant_types")
                         .into_iter()
@@ -822,19 +822,19 @@ async fn handle_parameterized_route(
                 }
                 return redirect_response(&format!("/admin/users/{id}"));
             }
-            if let Some(cred_id) = sub.strip_prefix("passkeys/") {
-                if method == Method::DELETE {
-                    if let Ok(Some(mut user)) = store::get_user(id).await {
-                        user.passkey_credentials
-                            .retain(|p| p.credential_id != cred_id);
-                        let _ = store::update_user(&user).await;
-                        let _ = store::unindex_passkey_credential(cred_id).await;
-                    }
-                    return Response::builder()
-                        .status(StatusCode::OK)
-                        .body(String::new())
-                        .unwrap();
+            if let Some(cred_id) = sub.strip_prefix("passkeys/")
+                && method == Method::DELETE
+            {
+                if let Ok(Some(mut user)) = store::get_user(id).await {
+                    user.passkey_credentials
+                        .retain(|p| p.credential_id != cred_id);
+                    let _ = store::update_user(&user).await;
+                    let _ = store::unindex_passkey_credential(cred_id).await;
                 }
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .body(String::new())
+                    .unwrap();
             }
         } else {
             let id = rest;
@@ -924,21 +924,22 @@ async fn handle_parameterized_route(
     // ── Single Hook Detail & Subroutes ──
     if let Some(rest) = path.strip_prefix("/admin/hooks/") {
         if let Some((id, sub)) = rest.split_once('/') {
-            if sub == "test" && method == Method::POST {
-                if let Ok(Some(hook)) = store::get_hook(id).await {
-                    match crate::hooks::test_hook(&hook.script, &hook.trigger) {
-                        Ok(outcome) => {
-                            let text =
-                                format!("Outcome: {:?}\nLogs: {:?}", outcome, outcome.log_messages);
-                            return html_response(
-                                views::hooks::render_test_result(&text, true).into_string(),
-                            );
-                        }
-                        Err(e) => {
-                            return html_response(
-                                views::hooks::render_test_result(&e, false).into_string(),
-                            );
-                        }
+            if sub == "test"
+                && method == Method::POST
+                && let Ok(Some(hook)) = store::get_hook(id).await
+            {
+                match crate::hooks::test_hook(&hook.script, &hook.trigger) {
+                    Ok(outcome) => {
+                        let text =
+                            format!("Outcome: {:?}\nLogs: {:?}", outcome, outcome.log_messages);
+                        return html_response(
+                            views::hooks::render_test_result(&text, true).into_string(),
+                        );
+                    }
+                    Err(e) => {
+                        return html_response(
+                            views::hooks::render_test_result(&e, false).into_string(),
+                        );
                     }
                 }
             }
@@ -1010,19 +1011,19 @@ async fn handle_parameterized_route(
     }
 
     // ── My Account Passkey Deletion ──
-    if let Some(cred_id) = path.strip_prefix("/admin/account/passkeys/") {
-        if method == Method::DELETE {
-            if let Ok(Some(mut user)) = store::get_user(&session.user.id).await {
-                user.passkey_credentials
-                    .retain(|p| p.credential_id != cred_id);
-                let _ = store::update_user(&user).await;
-                let _ = store::unindex_passkey_credential(cred_id).await;
-            }
-            return Response::builder()
-                .status(StatusCode::OK)
-                .body(String::new())
-                .unwrap();
+    if let Some(cred_id) = path.strip_prefix("/admin/account/passkeys/")
+        && method == Method::DELETE
+    {
+        if let Ok(Some(mut user)) = store::get_user(&session.user.id).await {
+            user.passkey_credentials
+                .retain(|p| p.credential_id != cred_id);
+            let _ = store::update_user(&user).await;
+            let _ = store::unindex_passkey_credential(cred_id).await;
         }
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(String::new())
+            .unwrap();
     }
 
     error_response(StatusCode::NOT_FOUND, "Admin route not found")
@@ -1030,6 +1031,7 @@ async fn handle_parameterized_route(
 
 // ── Session Resolver & CSRF Protection ──────────────────────────
 
+#[allow(clippy::result_large_err)]
 fn verify_admin_csrf(
     headers: &HeaderMap,
     body: &[u8],
@@ -1038,10 +1040,10 @@ fn verify_admin_csrf(
     use subtle::ConstantTimeEq;
 
     // 1. Bearer token authenticated requests (API clients) are not vulnerable to browser CSRF
-    if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if auth_hdr.starts_with("Bearer ") || auth_hdr.starts_with("bearer ") {
-            return Ok(());
-        }
+    if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && (auth_hdr.starts_with("Bearer ") || auth_hdr.starts_with("bearer "))
+    {
+        return Ok(());
     }
 
     // 2. Check x-csrf-token or hx-csrf-token header (HTMX)
@@ -1079,61 +1081,51 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
     let mut csrf_token_opt: Option<String> = None;
 
     // Check Authorization: Bearer <jwt>
-    if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = auth_hdr
+    if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && let Some(token) = auth_hdr
             .strip_prefix("Bearer ")
             .or_else(|| auth_hdr.strip_prefix("bearer "))
-        {
-            if let Ok(claims) = crate::service_client::verify_token_scoped(
-                token,
-                Some(&crate::get_issuer()),
-                None,
-                Some("access"),
-            )
-            .await
-            {
-                if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
-                    if let Ok(Some(u)) = store::get_user(sub).await {
-                        user_opt = Some(u);
-                        csrf_token_opt = Some(store::random_hex(24));
-                    }
-                }
-            }
-        }
+        && let Ok(claims) = crate::service_client::verify_token_scoped(
+            token,
+            Some(&crate::get_issuer()),
+            None,
+            Some("access"),
+        )
+        .await
+        && let Some(sub) = claims.get("sub").and_then(|v| v.as_str())
+        && let Ok(Some(u)) = store::get_user(sub).await
+    {
+        user_opt = Some(u);
+        csrf_token_opt = Some(store::random_hex(24));
     }
 
     // Check Cookies (lid_account or lid_session)
-    if user_opt.is_none() {
-        if let Some(cookie_hdr) = headers.get("cookie").and_then(|v| v.to_str().ok()) {
-            for cookie in cookie_hdr.split(';') {
-                let cookie = cookie.trim();
-                if let Some(val) = cookie.strip_prefix("lid_account=") {
-                    if let Ok(Some(session_rec)) = store::get_account_session(val).await {
-                        if store::unix_now() <= session_rec.expires_at {
-                            if let Ok(Some(u)) = store::get_user(&session_rec.user_id).await {
-                                user_opt = Some(u);
-                                csrf_token_opt = Some(if !session_rec.csrf_token.is_empty() {
-                                    session_rec.csrf_token
-                                } else {
-                                    store::sha256_hex(&format!("csrf:{val}"))[..24].to_string()
-                                });
-                                break;
-                            }
-                        }
-                    }
-                } else if let Some(val) = cookie.strip_prefix("lid_session=") {
-                    if let Ok(Some(session_rec)) = store::get_idp_session(val).await {
-                        if store::unix_now() <= session_rec.expires_at {
-                            if let Ok(Some(u)) = store::get_user(&session_rec.user_id).await {
-                                user_opt = Some(u);
-                                csrf_token_opt = Some(
-                                    store::sha256_hex(&format!("csrf:{val}"))[..24].to_string(),
-                                );
-                                break;
-                            }
-                        }
-                    }
+    if user_opt.is_none()
+        && let Some(cookie_hdr) = headers.get("cookie").and_then(|v| v.to_str().ok())
+    {
+        for cookie in cookie_hdr.split(';') {
+            let cookie = cookie.trim();
+            if let Some(val) = cookie.strip_prefix("lid_account=") {
+                if let Ok(Some(session_rec)) = store::get_account_session(val).await
+                    && store::unix_now() <= session_rec.expires_at
+                    && let Ok(Some(u)) = store::get_user(&session_rec.user_id).await
+                {
+                    user_opt = Some(u);
+                    csrf_token_opt = Some(if !session_rec.csrf_token.is_empty() {
+                        session_rec.csrf_token
+                    } else {
+                        store::sha256_hex(&format!("csrf:{val}"))[..24].to_string()
+                    });
+                    break;
                 }
+            } else if let Some(val) = cookie.strip_prefix("lid_session=")
+                && let Ok(Some(session_rec)) = store::get_idp_session(val).await
+                && store::unix_now() <= session_rec.expires_at
+                && let Ok(Some(u)) = store::get_user(&session_rec.user_id).await
+            {
+                user_opt = Some(u);
+                csrf_token_opt = Some(store::sha256_hex(&format!("csrf:{val}"))[..24].to_string());
+                break;
             }
         }
     }
@@ -1535,22 +1527,22 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
 
     // Verify TOTP or recovery code
     let mut verified = false;
-    if let Some(ref secret) = user.totp_secret {
-        if let Some(step) = crate::totp::verify_totp_step(secret, code) {
-            let replay_key = format!("totp_used:{}:{}", user.id, step);
-            if store::record_totp_used(&replay_key, 90)
-                .await
-                .unwrap_or(true)
-            {
-                verified = true;
-            } else {
-                return views::login::render_mfa_prompt(
-                    &user.email,
-                    mfa_token,
-                    return_target,
-                    Some("TOTP code already used. Please wait for the next code."),
-                );
-            }
+    if let Some(ref secret) = user.totp_secret
+        && let Some(step) = crate::totp::verify_totp_step(secret, code)
+    {
+        let replay_key = format!("totp_used:{}:{}", user.id, step);
+        if store::record_totp_used(&replay_key, 90)
+            .await
+            .unwrap_or(true)
+        {
+            verified = true;
+        } else {
+            return views::login::render_mfa_prompt(
+                &user.email,
+                mfa_token,
+                return_target,
+                Some("TOTP code already used. Please wait for the next code."),
+            );
         }
     }
 

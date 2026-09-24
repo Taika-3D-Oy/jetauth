@@ -1,6 +1,0 @@
-package taika3d:lid;
-
-interface abuse {
-    check-rate: async func(key: string, limit: u64, window-secs: u64) -> result<tuple<bool, u64>, string>;
-    record-metric: async func(name: string, labels: list<tuple<string, string>>) -> result<_, string>;
-}

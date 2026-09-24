@@ -11,7 +11,7 @@
 # 6. Cross-region redirect preserves OIDC parameters
 #
 # Prerequisites:
-#   Two-region deployment running (see deploy/deploy-two-region.sh)
+#   Two-region deployment running (see deploy/workloaddeployment-{eu,us}.yaml)
 #
 # Usage:
 #   EU_URL=http://localhost:8000 US_URL=http://localhost:8001 \
@@ -82,12 +82,12 @@ soft_contains() {
 
 log "Checking EU region at $EU_URL"
 if ! curl -H "Host: eu.lid.internal" -sf "$EU_URL/healthz" >/dev/null 2>&1; then
-  fail "EU region not responding at $EU_URL. Run: bash deploy/deploy-two-region.sh"
+  fail "EU region not responding at $EU_URL. Ensure deploy/workloaddeployment-eu.yaml is running."
 fi
 
 log "Checking US region at $US_URL"
 if ! curl -H "Host: us.lid.internal" -sf "$US_URL/healthz" >/dev/null 2>&1; then
-  fail "US region not responding at $US_URL. Run: bash deploy/deploy-two-region.sh"
+  fail "US region not responding at $US_URL. Ensure deploy/workloaddeployment-us.yaml is running."
 fi
 
 log "Both regions responding. Starting tests."

@@ -44,6 +44,7 @@ pub fn seed_session_revisions(revisions: HashMap<String, u64>, epoch: Option<Str
 
 /// Called after receiving a response with a server epoch. If the inbound epoch
 /// doesn't match, clear all seeded revisions (they're from a different dataset).
+#[cfg_attr(test, allow(dead_code))]
 fn validate_epoch(server_epoch: &str) {
     SERVER_EPOCH.with(|se| {
         *se.borrow_mut() = Some(server_epoch.to_string());
@@ -55,11 +56,11 @@ fn validate_epoch(server_epoch: &str) {
     EPOCH_VALIDATED.with(|ev| *ev.borrow_mut() = true);
 
     let inbound = INBOUND_EPOCH.with(|ie| ie.borrow().clone());
-    if let Some(inbound_epoch) = inbound {
-        if inbound_epoch != server_epoch {
-            // Epoch mismatch — data was wiped/restored. Discard stale revisions.
-            SESSION_REVISIONS.with(|sr| sr.borrow_mut().clear());
-        }
+    if let Some(inbound_epoch) = inbound
+        && inbound_epoch != server_epoch
+    {
+        // Epoch mismatch — data was wiped/restored. Discard stale revisions.
+        SESSION_REVISIONS.with(|sr| sr.borrow_mut().clear());
     }
 }
 
@@ -97,8 +98,11 @@ struct OidcConfigCache {
 
 /// Must be called once at startup / per request to load config values.
 pub async fn init_config() {
-    let ldb_instance = config_value_async("ldb_instance")
+    let ldb_instance = config_value_async("jetauth_instance")
         .await
+        .or(config_value_async("jetcache_instance").await)
+        .or(config_value_async("cache_instance").await)
+        .or(config_value_async("ldb_instance").await)
         .unwrap_or_else(|| "lid".to_string());
     let lockout_threshold = config_value_async("lockout_threshold").await;
     let lockout_duration_secs = config_value_async("lockout_duration_secs").await;
@@ -880,7 +884,6 @@ const TTL_REVOCATION_MARKER: u64 = 86400 * 30; // 30 days
 const TTL_MFA_PENDING: u64 = 300; // 5 min
 const TTL_ACCOUNT_SESSION: u64 = 1800; // 30 min
 pub const DEFAULT_IDP_SESSION_TTL: u64 = 86400 * 7; // 7 days (604,800s)
-const TTL_IDP_SESSION: u64 = DEFAULT_IDP_SESSION_TTL;
 const TTL_PASSKEY_CHALLENGE: u64 = 300; // 5 min
 const TTL_LOCKOUT: u64 = 3600; // 1 hour (generous buffer over default 15 min lock)
 const TTL_INVITATION: u64 = 86400 * 7; // 7 days
@@ -888,12 +891,14 @@ const TTL_AUDIT: u64 = 86400 * 90; // 90 days
 pub const TTL_PAR_REQUEST: u64 = 90; // 90 seconds (RFC 9126 §2.2)
 pub const TTL_JTI: u64 = 300; // 5 min (replay prevention window)
 
-// ── lattice-db via localhost TCP (co-located service) ──
+// ── jetcache / lattice-db via localhost TCP (co-located service) ──
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
-const LDB_TCP_PORT: u16 = 4080;
+pub const JETCACHE_TCP_PORT: u16 = 4080;
+#[allow(dead_code)]
+pub const LDB_TCP_PORT: u16 = JETCACHE_TCP_PORT;
 
 #[cfg(test)]
 static TEST_KV: std::sync::Mutex<Option<std::collections::HashMap<String, (String, u64)>>> =
@@ -976,11 +981,33 @@ fn handle_test_ldb_request(
             }
             Ok(serde_json::json!({ "keys": keys, "next_cursor": "" }))
         }
+        "prefix" => {
+            let user_prefix = payload.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
+            let table_prefix = format!("{table}:");
+            let match_prefix = format!("{table}:{user_prefix}");
+            let mut rows = Vec::new();
+            for (k, (val_b64, rev)) in map.iter() {
+                if k.starts_with(&match_prefix) {
+                    let key = k.strip_prefix(&table_prefix).unwrap_or(k);
+                    rows.push(serde_json::json!({
+                        "key": key,
+                        "value": val_b64,
+                        "revision": rev,
+                    }));
+                }
+            }
+            rows.sort_by(|a, b| {
+                a.get("key")
+                    .and_then(|k| k.as_str())
+                    .cmp(&b.get("key").and_then(|k| k.as_str()))
+            });
+            Ok(serde_json::json!({ "rows": rows }))
+        }
         _ => Err(format!("unsupported test op {op}")),
     }
 }
 
-/// Send a request to lattice-db via localhost TCP.
+/// Send a request to jetcache / lattice-db via localhost TCP.
 /// Wire protocol:
 /// - Request: [4-byte total_len][1-byte op_len][op][payload]
 /// - Response: [4-byte total_len][2-byte status_code][payload]
@@ -990,56 +1017,60 @@ pub(crate) async fn ldb_request(
 ) -> Result<serde_json::Value, String> {
     #[cfg(test)]
     {
-        return handle_test_ldb_request(op, payload);
+        handle_test_ldb_request(op, payload)
     }
-    // Build payload with consistency context.
-    let mut payload = payload.clone();
+    #[cfg(not(test))]
+    {
+        // Build payload with consistency context.
+        let mut payload = payload.clone();
 
-    if let Some(table) = payload.get("table").and_then(|t| t.as_str()) {
-        let min_rev = SESSION_REVISIONS.with(|sr| sr.borrow().get(table).copied());
-        if let Some(rev) = min_rev {
-            if let Some(obj) = payload.as_object_mut() {
+        if let Some(table) = payload.get("table").and_then(|t| t.as_str()) {
+            let min_rev = SESSION_REVISIONS.with(|sr| sr.borrow().get(table).copied());
+            if let Some(rev) = min_rev
+                && let Some(obj) = payload.as_object_mut()
+            {
                 obj.insert(
                     "consistency".to_string(),
                     serde_json::json!({ "min_revision": rev }),
                 );
             }
         }
-    }
 
-    let payload_bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;
+        let payload_bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;
 
-    // Direct localhost TCP loopback to co-located storage-service (127.0.0.1:4080)
-    let val: serde_json::Value = try_ldb_tcp(op, &payload_bytes)
-        .await
-        .map_err(|e| format!("ldb_request error on {op} (tcp): {e}"))?;
+        // Direct localhost TCP loopback to co-located storage-service (127.0.0.1:4080)
+        let val: serde_json::Value = try_ldb_tcp(op, &payload_bytes)
+            .await
+            .map_err(|e| format!("ldb_request error on {op} (tcp): {e}"))?;
 
-    if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
-        return Err(err.to_string());
-    }
+        if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+            return Err(err.to_string());
+        }
 
-    // Track session revisions for consistency.
-    if let Some(revisions) = val.get("revisions").and_then(|r| r.as_object()) {
-        SESSION_REVISIONS.with(|sr| {
-            let mut map = sr.borrow_mut();
-            for (table, rev) in revisions {
-                if let Some(rev_u64) = rev.as_u64() {
-                    let entry = map.entry(table.clone()).or_insert(0);
-                    if rev_u64 > *entry {
-                        *entry = rev_u64;
+        // Track session revisions for consistency.
+        if let Some(revisions) = val.get("revisions").and_then(|r| r.as_object()) {
+            SESSION_REVISIONS.with(|sr| {
+                let mut map = sr.borrow_mut();
+                for (table, rev) in revisions {
+                    if let Some(rev_u64) = rev.as_u64() {
+                        let entry = map.entry(table.clone()).or_insert(0);
+                        if rev_u64 > *entry {
+                            *entry = rev_u64;
+                        }
                     }
                 }
-            }
-        });
-    }
+            });
+        }
 
-    if let Some(server_epoch) = val.get("epoch").and_then(|e| e.as_str()) {
-        validate_epoch(server_epoch);
-    }
+        if let Some(server_epoch) = val.get("epoch").and_then(|e| e.as_str()) {
+            validate_epoch(server_epoch);
+        }
 
-    Ok(val)
+        Ok(val)
+    }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 async fn try_ldb_tcp(op: &str, body: &[u8]) -> Result<serde_json::Value, String> {
     use crate::bindings::wasi::sockets::instance_network::instance_network;
     use crate::bindings::wasi::sockets::network::{
@@ -1047,10 +1078,13 @@ async fn try_ldb_tcp(op: &str, body: &[u8]) -> Result<serde_json::Value, String>
     };
     use crate::bindings::wasi::sockets::tcp_create_socket::create_tcp_socket;
 
-    let port = std::env::var("LDB_TCP_PORT")
+    let port = std::env::var("JETAUTH_TCP_PORT")
+        .or_else(|_| std::env::var("JETCACHE_TCP_PORT"))
+        .or_else(|_| std::env::var("CACHE_TCP_PORT"))
+        .or_else(|_| std::env::var("LDB_TCP_PORT"))
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(LDB_TCP_PORT);
+        .unwrap_or(JETCACHE_TCP_PORT);
 
     let addr = IpSocketAddress::Ipv4(Ipv4SocketAddress {
         port,
@@ -1328,10 +1362,10 @@ pub(crate) async fn kv_cas_raw(
         "value": value_b64,
         "revision": revision,
     });
-    if let Some(ttl) = ttl_seconds {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("ttl_seconds".to_string(), serde_json::json!(ttl));
-        }
+    if let Some(ttl) = ttl_seconds
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("ttl_seconds".to_string(), serde_json::json!(ttl));
     }
     ldb_request("cas", &payload).await?;
     Ok(())
@@ -1414,6 +1448,83 @@ async fn kv_list_keys(store_name: &str) -> Result<Vec<String>, String> {
         }
     }
     Ok(all_keys)
+}
+
+/// Fetch all entries matching a key prefix in a single round-trip using jetcache's `prefix` endpoint.
+/// Returns a vector of `(key, T)` pairs.
+async fn kv_prefix<T: serde::de::DeserializeOwned>(
+    store_name: &str,
+    prefix: &str,
+) -> Result<Vec<(String, T)>, String> {
+    let payload = serde_json::json!({ "table": store_name, "prefix": prefix });
+    match ldb_request("prefix", &payload).await {
+        Ok(resp) => {
+            let rows = resp
+                .get("rows")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "missing rows in prefix response".to_string())?;
+
+            let mut result = Vec::with_capacity(rows.len());
+            for row in rows {
+                let key = row
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing key in prefix row")?;
+                let value_b64 = row
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing value in prefix row")?;
+                let bytes = B64
+                    .decode(value_b64)
+                    .map_err(|e| format!("base64 decode {key}: {e}"))?;
+                let val: T = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("deserialize {key}: {e}"))?;
+                result.push((key.to_string(), val));
+            }
+            Ok(result)
+        }
+        Err(e) if e.contains("unsupported") || e.contains("unknown") => {
+            // Graceful fallback for pre-2.0 storage-service
+            let keys = kv_list_keys(store_name).await?;
+            let mut result = Vec::new();
+            for key in keys {
+                if key.starts_with(prefix)
+                    && let Some(val) = kv_get::<T>(store_name, &key).await?
+                {
+                    result.push((key, val));
+                }
+            }
+            Ok(result)
+        }
+        Err(e) => Err(format!("prefix {prefix} on {store_name}: {e}")),
+    }
+}
+
+/// Fetch all keys matching a prefix in a single round-trip using jetcache's `prefix` endpoint.
+async fn kv_prefix_keys(store_name: &str, prefix: &str) -> Result<Vec<String>, String> {
+    let payload = serde_json::json!({ "table": store_name, "prefix": prefix });
+    match ldb_request("prefix", &payload).await {
+        Ok(resp) => {
+            let rows = resp
+                .get("rows")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "missing rows in prefix response".to_string())?;
+
+            let mut result = Vec::with_capacity(rows.len());
+            for row in rows {
+                if let Some(key) = row.get("key").and_then(|v| v.as_str()) {
+                    result.push(key.to_string());
+                }
+            }
+            Ok(result)
+        }
+        Err(e) if e.contains("unsupported") || e.contains("unknown") => {
+            // Graceful fallback for pre-2.0 storage-service
+            let keys = kv_list_keys(store_name).await?;
+            Ok(keys.into_iter().filter(|k| k.starts_with(prefix)).collect())
+        }
+        Err(e) => Err(format!("prefix keys {prefix} on {store_name}: {e}")),
+    }
 }
 
 /// Atomically swap a value if the revision matches.
@@ -1611,24 +1722,22 @@ pub async fn delete_user(user_id: &str) -> Result<(), String> {
 
     // Remove all tenant memberships for this user
     let store_name = memberships_store();
-    let keys = kv_list_keys(&store_name).await.unwrap_or_default();
-    for key in keys {
-        // Forward keys: tenant:{tid}:user:{uid}
-        // Reverse keys: user:{uid}:tenant:{tid}
-        if key.contains(&format!(":user:{user_id}")) || key.starts_with(&format!("user:{user_id}:"))
-        {
-            let _ = kv_delete(&store_name, &key).await;
+    let user_tenant_prefix = format!("user:{user_id}:tenant:");
+    if let Ok(keys) = kv_prefix_keys(&store_name, &user_tenant_prefix).await {
+        for key in keys {
+            if let Some(tenant_id) = key.strip_prefix(&user_tenant_prefix) {
+                let _ = kv_delete(&store_name, &format!("tenant:{tenant_id}:user:{user_id}")).await;
+                let _ = kv_delete(&store_name, &key).await;
+            }
         }
     }
 
     // Remove all user consent grants (GDPR Art. 17)
     let u_store = users_store();
     let consent_prefix = format!("consent:{user_id}:");
-    if let Ok(user_keys) = kv_list_keys(&u_store).await {
-        for key in user_keys {
-            if key.starts_with(&consent_prefix) {
-                let _ = kv_delete(&u_store, &key).await;
-            }
+    if let Ok(keys) = kv_prefix_keys(&u_store, &consent_prefix).await {
+        for key in keys {
+            let _ = kv_delete(&u_store, &key).await;
         }
     }
 
@@ -1650,16 +1759,8 @@ pub async fn set_superadmin_flag(val: bool) -> Result<(), String> {
 
 pub async fn list_users() -> Result<Vec<User>, String> {
     let store_name = users_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut users = Vec::new();
-    for key in keys {
-        if key.starts_with("user:")
-            && let Some(u) = kv_get::<User>(&store_name, &key).await?
-        {
-            users.push(u);
-        }
-    }
-    Ok(users)
+    let rows = kv_prefix::<User>(&store_name, "user:").await?;
+    Ok(rows.into_iter().map(|(_, u)| u).collect())
 }
 
 pub async fn get_user_by_email(email: &str) -> Result<Option<User>, String> {
@@ -1905,16 +2006,15 @@ pub async fn is_user_revoked(user_id: &str, iat: u64) -> Result<bool, String> {
 pub async fn delete_user_refresh_tokens(user_id: &str) -> Result<u32, String> {
     let store_name = sessions_store();
     let prefix = format!("refresh_idx:{user_id}:");
-    let keys = kv_list_keys(&store_name).await?;
+    let keys = kv_prefix_keys(&store_name, &prefix).await?;
     let mut count = 0u32;
     for key in keys {
-        if key.starts_with(&prefix) {
-            let token_hash = key.strip_prefix(&prefix).unwrap_or("");
-            if !token_hash.is_empty() {
-                let _ = kv_delete(&store_name, &format!("refresh:{token_hash}")).await;
-                let _ = kv_delete(&store_name, &key).await;
-                count += 1;
-            }
+        if let Some(token_hash) = key.strip_prefix(&prefix)
+            && !token_hash.is_empty()
+        {
+            let _ = kv_delete(&store_name, &format!("refresh:{token_hash}")).await;
+            let _ = kv_delete(&store_name, &key).await;
+            count += 1;
         }
     }
     revoke_user_sessions(user_id).await?;
@@ -1938,16 +2038,8 @@ pub async fn save_client(client: &OidcClient) -> Result<(), String> {
 
 pub async fn list_clients() -> Result<Vec<OidcClient>, String> {
     let store_name = clients_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut clients = Vec::new();
-    for key in keys {
-        if key.starts_with("client:")
-            && let Some(c) = kv_get::<OidcClient>(&store_name, &key).await?
-        {
-            clients.push(c);
-        }
-    }
-    Ok(clients)
+    let rows = kv_prefix::<OidcClient>(&store_name, "client:").await?;
+    Ok(rows.into_iter().map(|(_, c)| c).collect())
 }
 
 pub async fn delete_client(client_id: &str) -> Result<(), String> {
@@ -2036,16 +2128,8 @@ pub async fn delete_tenant(id: &str) -> Result<(), String> {
 
 pub async fn list_tenants() -> Result<Vec<Tenant>, String> {
     let store_name = tenants_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut tenants = Vec::new();
-    for key in keys {
-        if key.starts_with("tenant:")
-            && let Some(t) = kv_get::<Tenant>(&store_name, &key).await?
-        {
-            tenants.push(t);
-        }
-    }
-    Ok(tenants)
+    let rows = kv_prefix::<Tenant>(&store_name, "tenant:").await?;
+    Ok(rows.into_iter().map(|(_, t)| t).collect())
 }
 
 // ── Membership operations ───────────────────────────────────
@@ -2075,28 +2159,19 @@ pub async fn remove_membership(tenant_id: &str, user_id: &str) -> Result<(), Str
 pub async fn list_tenant_members(tenant_id: &str) -> Result<Vec<Membership>, String> {
     let prefix = format!("tenant:{tenant_id}:user:");
     let store_name = memberships_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut members = Vec::new();
-    for key in keys {
-        if key.starts_with(&prefix)
-            && let Some(m) = kv_get::<Membership>(&store_name, &key).await?
-        {
-            members.push(m);
-        }
-    }
-    Ok(members)
+    let rows = kv_prefix::<Membership>(&store_name, &prefix).await?;
+    Ok(rows.into_iter().map(|(_, m)| m).collect())
 }
 
 pub async fn list_user_tenants(user_id: &str) -> Result<Vec<Membership>, String> {
     let prefix = format!("user:{user_id}:tenant:");
-    let keys = kv_list_keys(&memberships_store()).await?;
+    let keys = kv_prefix_keys(&memberships_store(), &prefix).await?;
     let mut memberships = Vec::new();
     for key in keys {
-        if key.starts_with(&prefix) {
-            let tenant_id = key.strip_prefix(&prefix).unwrap_or("");
-            if let Some(m) = get_membership(tenant_id, user_id).await? {
-                memberships.push(m);
-            }
+        if let Some(tenant_id) = key.strip_prefix(&prefix)
+            && let Some(m) = get_membership(tenant_id, user_id).await?
+        {
+            memberships.push(m);
         }
     }
     Ok(memberships)
@@ -2227,7 +2302,7 @@ pub async fn list_audit_events(
     limit: usize,
 ) -> Result<Vec<AuditEvent>, String> {
     let store_name = audit_store();
-    let keys = kv_list_keys(&store_name).await?;
+    let keys = kv_prefix_keys(&store_name, "audit:").await?;
 
     // Extract timestamps from key names: "audit:<timestamp>:<rand>"
     let mut parsed_keys: Vec<(u64, String)> = keys
@@ -2395,13 +2470,9 @@ pub async fn get_identity_provider_by_type(
     provider_type: &str,
 ) -> Result<Option<IdentityProvider>, String> {
     let store_name = clients_store();
-    let keys = kv_list_keys(&store_name).await?;
-    for key in keys {
-        if key.starts_with("idp:")
-            && let Some(idp) = kv_get::<IdentityProvider>(&store_name, &key).await?
-            && idp.provider_type == provider_type
-            && idp.enabled
-        {
+    let rows = kv_prefix::<IdentityProvider>(&store_name, "idp:").await?;
+    for (_, idp) in rows {
+        if idp.provider_type == provider_type && idp.enabled {
             return Ok(Some(idp));
         }
     }
@@ -2410,16 +2481,8 @@ pub async fn get_identity_provider_by_type(
 
 pub async fn list_identity_providers() -> Result<Vec<IdentityProvider>, String> {
     let store_name = clients_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut providers = Vec::new();
-    for key in keys {
-        if key.starts_with("idp:")
-            && let Some(idp) = kv_get::<IdentityProvider>(&store_name, &key).await?
-        {
-            providers.push(idp);
-        }
-    }
-    Ok(providers)
+    let rows = kv_prefix::<IdentityProvider>(&store_name, "idp:").await?;
+    Ok(rows.into_iter().map(|(_, idp)| idp).collect())
 }
 
 pub async fn delete_identity_provider(id: &str) -> Result<(), String> {
@@ -2680,16 +2743,8 @@ pub async fn get_hook(id: &str) -> Result<Option<Hook>, String> {
 
 pub async fn list_hooks() -> Result<Vec<Hook>, String> {
     let store_name = clients_store();
-    let keys = kv_list_keys(&store_name).await?;
-    let mut hooks = Vec::new();
-    for key in keys {
-        if key.starts_with("hook:")
-            && let Some(hook) = kv_get::<Hook>(&store_name, &key).await?
-        {
-            hooks.push(hook);
-        }
-    }
-    Ok(hooks)
+    let rows = kv_prefix::<Hook>(&store_name, "hook:").await?;
+    Ok(rows.into_iter().map(|(_, hook)| hook).collect())
 }
 
 pub async fn delete_hook(id: &str) -> Result<(), String> {
@@ -2704,15 +2759,8 @@ pub async fn save_hook_version(ver: &HookVersion) -> Result<(), String> {
 pub async fn list_hook_versions(hook_id: &str) -> Result<Vec<HookVersion>, String> {
     let store_name = audit_store();
     let prefix = format!("hookver:{hook_id}:");
-    let keys = kv_list_keys(&store_name).await?;
-    let mut versions = Vec::new();
-    for key in keys {
-        if key.starts_with(&prefix)
-            && let Some(ver) = kv_get::<HookVersion>(&store_name, &key).await?
-        {
-            versions.push(ver);
-        }
-    }
+    let rows = kv_prefix::<HookVersion>(&store_name, &prefix).await?;
+    let mut versions: Vec<HookVersion> = rows.into_iter().map(|(_, ver)| ver).collect();
     versions.sort_by_key(|v| v.version);
     Ok(versions)
 }
@@ -2806,6 +2854,7 @@ pub async fn has_user_consented(
     Ok(all_granted)
 }
 
+#[allow(dead_code)]
 pub async fn delete_user_consent(user_id: &str, client_id: &str) -> Result<(), String> {
     let key = format!("consent:{user_id}:{client_id}");
     kv_delete(&users_store(), &key).await
@@ -2813,17 +2862,9 @@ pub async fn delete_user_consent(user_id: &str, client_id: &str) -> Result<(), S
 
 pub async fn list_user_consents(user_id: &str) -> Result<Vec<UserConsent>, String> {
     let store_name = users_store();
-    let keys = kv_list_keys(&store_name).await?;
     let prefix = format!("consent:{user_id}:");
-    let mut consents = Vec::new();
-    for key in keys {
-        if key.starts_with(&prefix)
-            && let Some(c) = kv_get::<UserConsent>(&store_name, &key).await?
-        {
-            consents.push(c);
-        }
-    }
-    Ok(consents)
+    let rows = kv_prefix::<UserConsent>(&store_name, &prefix).await?;
+    Ok(rows.into_iter().map(|(_, c)| c).collect())
 }
 
 // ── Device Authorization Grant (RFC 8628) ───────────────────
@@ -2923,19 +2964,94 @@ pub async fn consume_social_csrf(csrf_token: &str) -> Result<Option<String>, Str
 pub async fn list_user_client_ids(user_id: &str) -> Result<Vec<String>, String> {
     let store_name = sessions_store();
     let prefix = format!("refresh_idx:{user_id}:");
-    let keys = kv_list_keys(&store_name).await?;
+    let keys = kv_prefix_keys(&store_name, &prefix).await?;
     let mut client_ids = Vec::new();
     for key in keys {
-        if key.starts_with(&prefix) {
-            let token_hash = key.strip_prefix(&prefix).unwrap_or("");
-            if !token_hash.is_empty()
-                && let Ok(Some(entry)) =
-                    kv_get::<RefreshEntry>(&store_name, &format!("refresh:{token_hash}")).await
-                && !client_ids.contains(&entry.client_id)
-            {
-                client_ids.push(entry.client_id);
-            }
+        if let Some(token_hash) = key.strip_prefix(&prefix)
+            && !token_hash.is_empty()
+            && let Ok(Some(entry)) =
+                kv_get::<RefreshEntry>(&store_name, &format!("refresh:{token_hash}")).await
+            && !client_ids.contains(&entry.client_id)
+        {
+            client_ids.push(entry.client_id);
         }
     }
     Ok(client_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kv_prefix_and_domain_listings() {
+        futures::executor::block_on(async {
+            init_config_for_test(true, None);
+
+            // Test kv_prefix directly
+            let test_table = "test-prefix-table";
+            let payload1 = serde_json::json!({ "id": 1, "name": "alpha" });
+            let payload2 = serde_json::json!({ "id": 2, "name": "beta" });
+            let payload3 = serde_json::json!({ "id": 3, "name": "gamma" });
+
+            kv_set(test_table, "item:1", &payload1).await.unwrap();
+            kv_set(test_table, "item:2", &payload2).await.unwrap();
+            kv_set(test_table, "other:3", &payload3).await.unwrap();
+
+            let prefix_items = kv_prefix::<serde_json::Value>(test_table, "item:")
+                .await
+                .unwrap();
+            assert_eq!(prefix_items.len(), 2);
+            assert_eq!(prefix_items[0].0, "item:1");
+            assert_eq!(prefix_items[1].0, "item:2");
+
+            let prefix_keys = kv_prefix_keys(test_table, "item:").await.unwrap();
+            assert_eq!(prefix_keys, vec!["item:1", "item:2"]);
+
+            // Test list_clients with prefix optimization
+            let client = OidcClient {
+                client_id: "prefix-test-client".to_string(),
+                name: "Prefix Client".to_string(),
+                redirect_uris: vec!["http://localhost/cb".to_string()],
+                grant_types: vec!["authorization_code".to_string()],
+                ..Default::default()
+            };
+            save_client(&client).await.unwrap();
+            let clients = list_clients().await.unwrap();
+            assert!(clients.iter().any(|c| c.client_id == "prefix-test-client"));
+
+            // Test user consent listing with prefix optimization
+            save_user_consent(
+                "usr-prefix-1",
+                "client-a",
+                &["openid".into(), "profile".into()],
+            )
+            .await
+            .unwrap();
+            save_user_consent("usr-prefix-1", "client-b", &["email".into()])
+                .await
+                .unwrap();
+            let consents = list_user_consents("usr-prefix-1").await.unwrap();
+            assert_eq!(consents.len(), 2);
+
+            // Test delete_user consent cleanup
+            let dummy_user = User {
+                id: "usr-prefix-1".to_string(),
+                email: "usr-prefix-1@example.com".to_string(),
+                name: "Prefix User".to_string(),
+                password_hash: "hash".to_string(),
+                status: "active".to_string(),
+                created_at: 0,
+                superadmin: false,
+                totp_secret: None,
+                totp_enabled: false,
+                recovery_codes: Vec::new(),
+                passkey_credentials: Vec::new(),
+            };
+            create_user(&dummy_user).await.unwrap();
+            delete_user("usr-prefix-1").await.unwrap();
+            let remaining_consents = list_user_consents("usr-prefix-1").await.unwrap();
+            assert!(remaining_consents.is_empty());
+        });
+    }
 }

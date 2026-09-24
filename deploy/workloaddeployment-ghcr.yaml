@@ -1,16 +1,15 @@
 apiVersion: runtime.wasmcloud.dev/v1alpha1
 kind: WorkloadDeployment
 metadata:
-  name: lattice-id
+  name: jetauth
   annotations:
-    description: Lattice-ID authority workload (GHCR images for CI / external use)
-    # Images are published by CI on push to master (:latest) and on tags (:v1.x.x).
+    description: JetAuth authority workload (GHCR images for CI / external use)
+    # Images are published by CI on push to master (:latest) and on tags (:v2.x.x).
     # Replace :latest with a pinned tag for reproducible deployments.
     # Substitute __PLACEHOLDERS__ with sed before applying:
     #   sed -e 's|__ISSUER_URL__|http://localhost:8000|' \
     #       -e 's|__HOST__|localhost|' \
     #       -e 's|__NATS_DATA_URL__|nats-data:4222|' \
-    #       -e 's|__NATS_MSG_URL__|nats://nats-data:4222|' \
     #       -e 's|__EMAIL_PROVIDER__|log|' \
     #       deploy/workloaddeployment-ghcr.yaml | kubectl apply -f -
 spec:
@@ -18,24 +17,27 @@ spec:
   deployPolicy: RollingUpdate
   template:
     labels:
-      app.kubernetes.io/name: lattice-id
+      app.kubernetes.io/name: jetauth
       app.kubernetes.io/component: authority
     spec:
       service:
-        image: ghcr.io/taika-3d-oy/lattice-db/storage-service:v1.11.0
+        image: ghcr.io/taika-3d-oy/jetcache/storage-service:v2.0.0-rc.1
         imagePullPolicy: Always
         maxRestarts: 10
         localResources:
           environment:
             config:
               NATS_DATA_URL: "__NATS_DATA_URL__"
+              JETAUTH_INSTANCE: "lid"
+              JETCACHE_INSTANCE: "lid"
               LDB_INSTANCE: "lid"
+              JETCACHE_TCP_PORT: "4080"
               LDB_TCP_PORT: "4080"
               LDB_CONSISTENCY_WATCHER_WAIT_STEPS: "2"
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
         - name: oidc-gateway
-          image: ghcr.io/taika-3d-oy/lattice-id/oidc-gateway:v1.11.0
+          image: ghcr.io/taika-3d-oy/jetauth/oidc-gateway:v2.0.0-rc.1
           imagePullPolicy: Always
           maxInvocations: 100
           localResources:
@@ -43,11 +45,11 @@ spec:
               config:
                 issuer_url: __ISSUER_URL__
         - name: password-hasher
-          image: ghcr.io/taika-3d-oy/lattice-id/password-hasher:v1.11.0
+          image: ghcr.io/taika-3d-oy/jetauth/password-hasher:v2.0.0-rc.1
           imagePullPolicy: Always
           maxInvocations: 8
         - name: email-worker
-          image: ghcr.io/taika-3d-oy/lattice-id/email-worker:v1.11.0
+          image: ghcr.io/taika-3d-oy/jetauth/email-worker:v2.0.0-rc.1
           imagePullPolicy: Always
           maxInvocations: 10
       hostInterfaces:
@@ -62,6 +64,8 @@ spec:
           interfaces:
             - store
           config:
+            jetauth_instance: "lid"
+            jetcache_instance: "lid"
             ldb_instance: "lid"
             dev_mode: "false"
             require_email_verification: "true"
@@ -74,11 +78,3 @@ spec:
           package: http
           interfaces:
             - outgoing-handler
-        - namespace: wasmcloud
-          package: messaging
-          version: 0.2.0
-          interfaces:
-            - consumer
-          config:
-            subscriptions: ""
-            nats_url: __NATS_MSG_URL__

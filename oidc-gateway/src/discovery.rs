@@ -43,13 +43,13 @@ pub fn openid_configuration(issuer: &str) -> Response<String> {
     });
 
     let mut doc = doc;
-    if crate::store::client_registration_mode() != "disabled" {
-        if let Some(obj) = doc.as_object_mut() {
-            obj.insert(
-                "registration_endpoint".to_string(),
-                serde_json::Value::String(format!("{issuer}/connect/register")),
-            );
-        }
+    if crate::store::client_registration_mode() != "disabled"
+        && let Some(obj) = doc.as_object_mut()
+    {
+        obj.insert(
+            "registration_endpoint".to_string(),
+            serde_json::Value::String(format!("{issuer}/connect/register")),
+        );
     }
 
     Response::builder()
@@ -89,13 +89,13 @@ pub fn oauth_authorization_server(issuer: &str) -> Response<String> {
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
     });
 
-    if crate::store::client_registration_mode() != "disabled" {
-        if let Some(obj) = doc.as_object_mut() {
-            obj.insert(
-                "registration_endpoint".to_string(),
-                serde_json::Value::String(format!("{issuer}/connect/register")),
-            );
-        }
+    if crate::store::client_registration_mode() != "disabled"
+        && let Some(obj) = doc.as_object_mut()
+    {
+        obj.insert(
+            "registration_endpoint".to_string(),
+            serde_json::Value::String(format!("{issuer}/connect/register")),
+        );
     }
 
     Response::builder()

@@ -90,10 +90,10 @@ pub async fn validate_dpop_proof(
     }
 
     // If exp is present, verify not expired
-    if let Some(exp) = payload.get("exp").and_then(|v| v.as_u64()) {
-        if now > exp {
-            return Err("DPoP proof has expired".into());
-        }
+    if let Some(exp) = payload.get("exp").and_then(|v| v.as_u64())
+        && now > exp
+    {
+        return Err("DPoP proof has expired".into());
     }
 
     // Validate ath if access_token_for_ath is provided (RFC 9449 §4.3 item 7)

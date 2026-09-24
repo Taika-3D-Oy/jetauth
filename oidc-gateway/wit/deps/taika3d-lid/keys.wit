@@ -1,8 +1,0 @@
-package taika3d:lid;
-
-interface keys {
-    get-public-key: async func() -> result<string, string>;
-    get-public-keys: async func() -> result<string, string>;
-    get-kid: async func() -> result<string, string>;
-    sign-jwt: async func(header: string, payload: string) -> result<string, string>;
-}

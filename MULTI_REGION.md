@@ -269,7 +269,7 @@ from the correct region. No key replication is needed.
 | 9 | region-authority | Local NATS KV lookup with in-memory cache | `region-authority/src/lib.rs` |
 | 10 | key-manager | Per-region RSA key generation + CAS rotation | `key-manager/src/lib.rs` |
 | 11 | Config | Region config values in wasi:config/store | `deploy/workloaddeployment-{eu,us}.yaml` |
-| 12 | Infrastructure | Deploy script, Kind clusters | `deploy/deploy-two-region.sh` |
+| 12 | Infrastructure | Region manifests | `deploy/workloaddeployment-{eu,us}.yaml` |
 
 ## Compliance Assessment
 
@@ -328,29 +328,22 @@ from the correct region. No key replication is needed.
 
 ### Prerequisites
 
-- Docker (for Kind clusters)
-- Kind (`kind` CLI)
-- kubectl with contexts for both clusters
-- Custom wasmCloud image (`wash:p3`) built from `~/wasmcloud-src`
-- `/etc/hosts` entry: `127.0.0.1 eu.lid.internal us.lid.internal`
+- Kubernetes clusters for target regions (or distinct namespaces)
+- wasmCloud operator installed in each region
+- Independent NATS JetStream instances in each region
+- `/etc/hosts` or DNS entries for regional endpoints (e.g. `eu.lid.internal`, `us.lid.internal`)
 
-### Deploy from Scratch
+### Deploy Workloads
 
-```bash
-bash deploy/deploy-two-region.sh
-```
-
-This creates two Kind clusters, a shared OCI registry, and deploys all
-workloads. Takes ~5 minutes on first run.
-
-### Rebuild and Redeploy (after code changes)
+Apply the region manifests to their respective clusters or namespaces:
 
 ```bash
-bash deploy/deploy-two-region.sh rebuild
-```
+# EU Region
+kubectl apply -f deploy/workloaddeployment-eu.yaml
 
-Builds the Rust workspace, pushes all components to the local registry,
-clears OCI caches, and redeploys all workloads.
+# US Region
+kubectl apply -f deploy/workloaddeployment-us.yaml
+```
 
 ### Clean Reset (clear all data)
 
@@ -358,20 +351,21 @@ JetStream KV data is stored locally on each region's `nats-data` pod
 (in `/tmp/nats/jetstream`). To get a fully clean state:
 
 ```bash
-# 1. Delete all workloads
-kubectl --context kind-lattice-id-eu -n eu delete workloaddeployment --all
-kubectl --context kind-lattice-id-us -n us delete workloaddeployment --all
+# 1. Delete workloads
+kubectl -n eu delete workloaddeployment jetauth-eu
+kubectl -n us delete workloaddeployment jetauth-us
 
 # 2. Restart nats-data pods (clears /tmp JetStream data)
-kubectl --context kind-lattice-id-eu -n eu rollout restart deploy/nats-data
-kubectl --context kind-lattice-id-us -n us rollout restart deploy/nats-data
+kubectl -n eu rollout restart deploy/nats-data
+kubectl -n us rollout restart deploy/nats-data
 
 # 3. Restart wasmCloud hosts (re-establishes NATS subscriptions)
-kubectl --context kind-lattice-id-eu -n eu rollout restart deploy/hostgroup-default
-kubectl --context kind-lattice-id-us -n us rollout restart deploy/hostgroup-default
+kubectl -n eu rollout restart deploy/hostgroup-default
+kubectl -n us rollout restart deploy/hostgroup-default
 
-# 4. Wait ~35s, then redeploy workloads
-bash deploy/deploy-two-region.sh rebuild
+# 4. Redeploy workloads
+kubectl apply -f deploy/workloaddeployment-eu.yaml
+kubectl apply -f deploy/workloaddeployment-us.yaml
 ```
 
 ### Run Integration Tests
@@ -394,14 +388,6 @@ Tests cover (20 assertions):
 9. Tenant sync: tenant created in EU visible in US via HTTP replication
 10. Client sync: client created in EU visible in US via HTTP replication
 11. User store isolation: EU user not visible in US (per-region kv_prefix)
-
-### Teardown
-
-```bash
-bash deploy/deploy-two-region.sh teardown
-```
-
-Deletes both Kind clusters and the OCI registry.
 
 ## Scaling
 

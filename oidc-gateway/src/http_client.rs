@@ -41,14 +41,14 @@ pub async fn send_request(request: http::Request<String>) -> Result<(u16, Vec<u8
     }
 
     let req_body = request.body();
-    if !req_body.is_empty() {
-        if let Ok(out_body) = outgoing.body() {
-            if let Ok(stream) = out_body.write() {
-                let _ = stream.blocking_write_and_flush(req_body.as_bytes());
-                drop(stream);
-            }
-            let _ = OutgoingBody::finish(out_body, None);
+    if !req_body.is_empty()
+        && let Ok(out_body) = outgoing.body()
+    {
+        if let Ok(stream) = out_body.write() {
+            let _ = stream.blocking_write_and_flush(req_body.as_bytes());
+            drop(stream);
         }
+        let _ = OutgoingBody::finish(out_body, None);
     }
 
     let opts = RequestOptions::new();
@@ -66,13 +66,13 @@ pub async fn send_request(request: http::Request<String>) -> Result<(u16, Vec<u8
 
     let status = incoming.status();
     let mut body_bytes = Vec::new();
-    if let Ok(inc_body) = incoming.consume() {
-        if let Ok(in_stream) = inc_body.stream() {
-            loop {
-                match in_stream.blocking_read(65536) {
-                    Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
-                    _ => break,
-                }
+    if let Ok(inc_body) = incoming.consume()
+        && let Ok(in_stream) = inc_body.stream()
+    {
+        loop {
+            match in_stream.blocking_read(65536) {
+                Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
+                _ => break,
             }
         }
     }

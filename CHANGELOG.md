@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.1] - 2026-09-24
+
+### Rebranding & Major Architecture Upgrade
+
+- **Project Rebranding to `jetauth`**:
+  - Rebranded `lattice-id` to **`jetauth`** across workspace manifests, deployment descriptors, build tooling, and documentation.
+  - Formally aligned with **`jetcache` 2.0** (`Taika-3D-Oy/jetcache`) and **`nats-wasip3` 1.0.0** (`Taika-3D-Oy/nats-wasip3`).
+  - Preserved internal WIT package namespace identifiers (`lattice-id:crypto/password`, `lattice-id:notify/email`, `lattice-id:oidc`) to maintain 100% ABI compatibility with existing wasmCloud hosts and components.
+
+### Storage Layer & `jetcache` 2.0 Integration
+
+- **Single Round-Trip Prefix Scan Optimization**:
+  - Added native support for `jetcache` 2.0's `"prefix"` wire operation in `store.rs` (`kv_prefix<T>` and `kv_prefix_keys`).
+  - Eliminated N+1 query patterns across all major domain functions, collapsing multi-key lookups into a single TCP round-trip:
+    - User listings (`list_users`), client listings (`list_clients`), and tenant listings (`list_tenants`).
+    - Tenant memberships (`list_tenant_members`) and user tenant associations (`list_user_tenants`).
+    - Webhook definitions (`list_hooks`) and versioned hooks (`list_hook_versions`).
+    - User consents (`list_user_consents`), user refresh token indices (`delete_user_refresh_tokens`, `list_user_client_ids`), and audit log entries (`list_audit_entries`).
+    - Federated Identity Providers (`list_identity_providers`, `get_identity_provider_by_type`).
+    - GDPR user erasure (`delete_user`) membership and consent cleanup.
+  - Implemented seamless fallback to `kv_list_keys` when deployed against pre-2.0 `storage-service` instances.
+- **Cascading Configuration & Port Resolution**:
+  - Added hierarchical instance resolution: checks `jetauth_instance` -> `jetcache_instance` -> `cache_instance` -> `ldb_instance` (default: `"lid"`).
+  - Added hierarchical TCP port resolution: checks `JETAUTH_TCP_PORT` -> `JETCACHE_TCP_PORT` -> `CACHE_TCP_PORT` -> `LDB_TCP_PORT` (default: `4080`).
+
+### Deployment & Toolchain Cleanup
+
+- **Cleaned Up Obsolete Interfaces & WIT Dependencies**:
+  - Removed dead `wasmcloud:messaging` host interface configurations across all WorkloadDeployments (`workloaddeployment-local.yaml`, `workloaddeployment-local-prod.yaml`, `workloaddeployment-ghcr.yaml`, `workloaddeployment-eu.yaml`, `workloaddeployment-us.yaml`).
+  - Removed orphaned WIT dependency packages (`taika3d-ldb`, `taika3d-lid`, `wasmcloud-messaging-0.2.0`).
+  - Removed obsolete and brittle Kind deployment scripts (`deploy-*.sh`) in favor of clean declarative WorkloadDeployment manifests (`deploy/workloaddeployment-*.yaml`) and documented setup.
+
+### Code Health & Testing
+
+- **Zero-Warning Clean Build & Clippy**:
+  - Replaced deprecated `GenericArray::as_slice()` calls in WebAuthn / Passkey validation with slice indexing (`&expected_rp_hash[..]`).
+  - Removed unused constants and silenced dead code across legacy and test harnesses.
+  - Achieved 100% warning-free compilation on both host (`aarch64-apple-darwin`) and WebAssembly (`wasm32-wasip2`) targets.
+  - Resolved all 65 Clippy suggestions (`collapsible_if`, let-chains, field reassignments, test module ordering); verified with `cargo clippy --workspace --all-targets -- -D warnings`.
+  - Standardized formatting across the entire workspace with `cargo fmt`.
+- **CI & Security Governance**:
+  - Added `.github/workflows/ci.yml` for pull request validation (formatting, clippy, unit tests, wasm release build).
+  - Added responsible vulnerability disclosure guidelines in `SECURITY.md` pointing to GitHub Private Vulnerability Reporting and security contact email.
+- **Test Suite Expansion**:
+  - Added comprehensive unit tests in `store.rs` verifying `kv_prefix` and `kv_prefix_keys` wire protocol handling, client listings, user consent queries, and GDPR deletion cleanup. All 167 unit tests pass.
+
 ## [1.13.0] - 2026-09-23
 
 ### Security & Compliance

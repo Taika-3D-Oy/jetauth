@@ -49,6 +49,7 @@ fn extract_bearer_token(auth_header: Option<&str>) -> Option<&str> {
 }
 
 /// Validates policy for initial registration.
+#[allow(clippy::result_large_err)]
 fn check_registration_gating(auth_header: Option<&str>) -> Result<(), Response<String>> {
     let mode = store::client_registration_mode();
     match mode.as_str() {
@@ -122,8 +123,7 @@ fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
         return Err("Redirect URIs must use http or https scheme");
     }
     // Reject plain HTTP unless localhost/127.0.0.1
-    if uri.starts_with("http://") {
-        let rest = &uri["http://".len()..];
+    if let Some(rest) = uri.strip_prefix("http://") {
         let host = rest.split(['/', ':']).next().unwrap_or("");
         if host != "localhost" && host != "127.0.0.1" {
             return Err("Redirect URIs must use https (plain http only allowed for localhost)");
@@ -529,10 +529,10 @@ pub async fn update_client(
         client.post_logout_redirect_uris = post_logout_uris;
     }
 
-    if let Some(name) = req.client_name {
-        if !name.is_empty() {
-            client.name = name;
-        }
+    if let Some(name) = req.client_name
+        && !name.is_empty()
+    {
+        client.name = name;
     }
 
     if let Some(grants) = req.grant_types {

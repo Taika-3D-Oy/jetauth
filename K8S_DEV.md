@@ -119,47 +119,43 @@ Wait for all pods:
 kubectl get pods -w
 ```
 
-### 3. Build, deploy, and test
-
-Use the deploy script for the remaining steps (NATS data-plane, lattice-db,
-lattice-id, host patching):
+### 3. Build, push, and deploy
 
 ```bash
-bash deploy/deploy-local.sh
-```
+# 1. Build release components
+cargo build --workspace --target wasm32-wasip2 --release
 
-Or for a rebuild cycle after code changes:
+# 2. Push components to your registry (e.g. localhost:5001 or kind-registry:5000)
+wash oci push --insecure localhost:5001/jetauth/oidc-gateway:dev \
+  target/wasm32-wasip2/release/oidc_gateway.wasm
+wash oci push --insecure localhost:5001/jetauth/password-hasher:dev \
+  target/wasm32-wasip2/release/password_hasher.wasm
+wash oci push --insecure localhost:5001/jetauth/email-worker:dev \
+  target/wasm32-wasip2/release/email_worker.wasm
 
-```bash
-bash deploy/deploy-local.sh rebuild
+# 3. Apply the workload deployment
+kubectl apply -f deploy/workloaddeployment-local.yaml
 ```
 
 ### Redeploy after code changes
 
-```bash
-bash deploy/deploy-local.sh rebuild
-```
-
-This rebuilds all wasm components, pushes them to the local registry, clears
-the OCI cache on host pods, and redeploys the workload.
-
-For manual redeployment (e.g. single component), the steps are:
+When updating components during local iteration:
 
 ```bash
-# 1. Build
+# 1. Rebuild
 cargo build --workspace --target wasm32-wasip2 --release
 
 # 2. Push changed component(s)
-wash oci push --insecure localhost:5001/lattice-id/oidc-gateway:dev \
+wash oci push --insecure localhost:5001/jetauth/oidc-gateway:dev \
   target/wasm32-wasip2/release/oidc_gateway.wasm
 
 # 3. Clear OCI cache on host pods
 for pod in $(kubectl get pods -l wasmcloud.com/hostgroup=default -o name); do
-  kubectl exec $pod -- sh -c 'rm -rf /oci-cache/kind-registry_5000_lattice-id_*'
+  kubectl exec $pod -- sh -c 'rm -rf /oci-cache/kind-registry_5000_jetauth_*'
 done
 
 # 4. Bounce the workload
-kubectl delete workloaddeployment lattice-id
+kubectl delete workloaddeployment jetauth
 kubectl apply -f deploy/workloaddeployment-local.yaml
 ```
 
@@ -167,24 +163,9 @@ kubectl apply -f deploy/workloaddeployment-local.yaml
 
 ## Development Workflows
 
-### Automated setup (recommended)
-
-The `deploy/deploy-local.sh` script handles the full setup from scratch:
-
-```bash
-bash deploy/deploy-local.sh            # full setup
-bash deploy/deploy-local.sh rebuild    # rebuild + redeploy components
-bash deploy/deploy-local.sh teardown   # destroy everything
-bash deploy/deploy-local.sh status     # show cluster status
-```
-
-This creates a Kind cluster, installs the wasmCloud operator, builds all
-components, deploys lattice-db and lattice-id, and exposes the HTTP gateway
-on `http://localhost:8000`.
-
 ### Running integration tests
 
-After the cluster is up:
+Once the workload is running:
 
 ```bash
 bash tests/run_cluster_tests.sh              # reset + run all
@@ -193,19 +174,12 @@ bash tests/run_cluster_tests.sh --no-reset   # skip reset, use existing state
 ```
 
 The test runner resets the cluster before each test (bounces nats-data +
-lattice-db + host, reapplies workloads) so each test gets a clean slate
-with a fresh bootstrap.
-
-### Rebuild loop
-
-After code changes:
+jetcache + host, reapplies workloads) so each test gets a clean slate
+with a fresh bootstrap. Individual tests can also be run directly against any endpoint:
 
 ```bash
-bash deploy/deploy-local.sh rebuild
+BASE_URL=http://localhost:8000 bash tests/integration_protocol.sh
 ```
-
-This rebuilds all wasm components, pushes to the local registry, clears the
-OCI cache on host pods, and redeploys the workload.
 
 ---
 
