@@ -23,18 +23,8 @@ pub async fn verify_token_scoped(
     let jwks = get_jwks().await?;
     let (_header, claims) = jwt::verify_jwt_with_jwks(token, &jwks)?;
 
-    // Validate iat and nbf
     let now = store::unix_now();
-    if let Some(iat) = claims.get("iat").and_then(|v| v.as_u64())
-        && iat > now + 30
-    {
-        return Err("token iat is in the future".into());
-    }
-    if let Some(nbf) = claims.get("nbf").and_then(|v| v.as_u64())
-        && nbf > now + 30
-    {
-        return Err("token not yet active (nbf)".into());
-    }
+    validate_token_times(&claims, now)?;
 
     // Revocation check
     if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
@@ -80,6 +70,26 @@ pub async fn verify_token_scoped(
     Ok(claims)
 }
 
+fn validate_token_times(claims: &Value, now: u64) -> Result<(), String> {
+    if let Some(iat) = claims.get("iat").and_then(|v| v.as_u64())
+        && iat > now + 30
+    {
+        return Err("token iat is in the future".into());
+    }
+    if let Some(nbf) = claims.get("nbf").and_then(|v| v.as_u64())
+        && nbf > now + 30
+    {
+        return Err("token not yet active (nbf)".into());
+    }
+    if let Some(exp) = claims.get("exp").and_then(|v| v.as_u64())
+        && now >= exp
+    {
+        return Err("token expired".into());
+    }
+
+    Ok(())
+}
+
 pub async fn get_jwks() -> Result<Value, String> {
     let keys_json = crate::key_manager::get_public_keys().await?;
     let keys: Vec<Value> =
@@ -105,6 +115,34 @@ pub async fn increment_metric(name: &str, labels: &[(&str, &str)]) -> Result<(),
     });
     // Metric emission is recorded via structured logging
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_token_times;
+    use serde_json::json;
+
+    #[test]
+    fn validate_token_times_accepts_current_token() {
+        let now = 1_700_000_000;
+        let claims = json!({
+            "iat": now - 10,
+            "nbf": now - 10,
+            "exp": now + 60
+        });
+
+        assert!(validate_token_times(&claims, now).is_ok());
+    }
+
+    #[test]
+    fn validate_token_times_rejects_expired_token() {
+        let now = 1_700_000_000;
+        let claims = json!({
+            "exp": now
+        });
+
+        assert_eq!(validate_token_times(&claims, now), Err("token expired".into()));
+    }
 }
 
 /// Cross-region lookup: first check local region via authority component,
