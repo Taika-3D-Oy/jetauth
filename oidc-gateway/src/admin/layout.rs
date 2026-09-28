@@ -86,25 +86,27 @@ pub fn render_layout(
                         span class="sidebar-link text-muted" style="font-style:italic" { "No tenant selected" }
                     }
 
-                    div class="sidebar-divider" {}
-                    div class="sidebar-section-label" { "Global" }
-                    a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
-                        "Tenants"
-                    }
-                    a href="/admin/clients" class={"sidebar-link" @if active_nav == "clients" { " active" }} {
-                        "Clients"
-                    }
-                    a href="/admin/identity-providers" class={"sidebar-link" @if active_nav == "idps" { " active" }} {
-                        "Identity Providers"
-                    }
-                    a href="/admin/hooks" class={"sidebar-link" @if active_nav == "hooks" { " active" }} {
-                        "Hooks"
-                    }
-                    a href="/admin/settings" class={"sidebar-link" @if active_nav == "settings" { " active" }} {
-                        "Settings"
-                    }
-                    a href="/admin/audit" class={"sidebar-link" @if active_nav == "audit" { " active" }} {
-                        "Audit Log"
+                    @if session.is_superadmin {
+                        div class="sidebar-divider" {}
+                        div class="sidebar-section-label" { "Global" }
+                        a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
+                            "Tenants"
+                        }
+                        a href="/admin/clients" class={"sidebar-link" @if active_nav == "clients" { " active" }} {
+                            "Clients"
+                        }
+                        a href="/admin/identity-providers" class={"sidebar-link" @if active_nav == "idps" { " active" }} {
+                            "Identity Providers"
+                        }
+                        a href="/admin/hooks" class={"sidebar-link" @if active_nav == "hooks" { " active" }} {
+                            "Hooks"
+                        }
+                        a href="/admin/settings" class={"sidebar-link" @if active_nav == "settings" { " active" }} {
+                            "Settings"
+                        }
+                        a href="/admin/audit" class={"sidebar-link" @if active_nav == "audit" { " active" }} {
+                            "Audit Log"
+                        }
                     }
 
                     div class="sidebar-divider" {}

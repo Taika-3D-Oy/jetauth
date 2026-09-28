@@ -114,7 +114,11 @@ pub async fn render_tenant_detail_page(
 ) -> Response<String> {
     let content = html! {
         div class="breadcrumb" {
-            a href="/admin/tenants" { "Tenants" }
+            @if session.is_superadmin {
+                a href="/admin/tenants" { "Tenants" }
+            } @else {
+                a href="/admin" { "Dashboard" }
+            }
             span { "/" }
             span { (tenant.display_name) }
         }
@@ -160,19 +164,21 @@ pub async fn render_tenant_detail_page(
             }
         }
 
-        // ── Danger Zone ──
-        div class="danger-zone" {
-            div class="danger-zone-title" { "Danger Zone" }
-            div class="danger-zone-row" {
-                div class="danger-zone-desc" {
-                    h4 { "Delete this tenant" }
-                    p { "Permanently remove this organization, all client bindings, and member associations." }
-                }
-                button class="btn btn-danger"
-                       hx-delete={"/admin/tenants/" (tenant.id)}
-                       hx-confirm={"Permanently delete tenant '" (tenant.display_name) "'?"}
-                       hx-target="body" {
-                    "Delete Tenant"
+        @if session.is_superadmin {
+            // ── Danger Zone ──
+            div class="danger-zone" {
+                div class="danger-zone-title" { "Danger Zone" }
+                div class="danger-zone-row" {
+                    div class="danger-zone-desc" {
+                        h4 { "Delete this tenant" }
+                        p { "Permanently remove this organization, all client bindings, and member associations." }
+                    }
+                    button class="btn btn-danger"
+                           hx-delete={"/admin/tenants/" (tenant.id)}
+                           hx-confirm={"Permanently delete tenant '" (tenant.display_name) "'?"}
+                           hx-target="body" {
+                        "Delete Tenant"
+                    }
                 }
             }
         }

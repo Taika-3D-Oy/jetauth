@@ -86,14 +86,6 @@ pub async fn handle_admin_route(
         Err(resp) => return resp,
     };
 
-    // ── CSRF Protection on state-mutating requests ──
-    if (*method == Method::POST || *method == Method::PUT || *method == Method::DELETE)
-        && let Err(resp) = verify_admin_csrf(headers, body, &session)
-    {
-        return resp;
-    }
-
-    // ── Route Dispatch ──
     let path_no_query = path.split('?').next().unwrap_or(path);
     let clean_path = path_no_query.trim_end_matches('/');
     let p = if clean_path.is_empty() {
@@ -102,6 +94,18 @@ pub async fn handle_admin_route(
         clean_path
     };
 
+    // ── CSRF Protection on state-mutating requests ──
+    if (*method == Method::POST || *method == Method::PUT || *method == Method::DELETE)
+        && let Err(resp) = verify_admin_csrf(headers, body, &session)
+    {
+        return resp;
+    }
+
+    if let Err(resp) = authorize_admin_route(&session, method, p) {
+        return resp;
+    }
+
+    // ── Route Dispatch ──
     match (method, p) {
         // ── Dashboard ──
         (&Method::GET, "/admin") => views::dashboard::render_dashboard(&session).await,
@@ -1032,21 +1036,104 @@ async fn handle_parameterized_route(
 // ── Session Resolver & CSRF Protection ──────────────────────────
 
 #[allow(clippy::result_large_err)]
+fn authorize_admin_route(
+    session: &AdminSession,
+    method: &Method,
+    path: &str,
+) -> Result<(), Response<String>> {
+    if session.is_superadmin {
+        return Ok(());
+    }
+
+    if !is_allowed_tenant_admin_route(method, path) {
+        return Err(error_response(
+            StatusCode::FORBIDDEN,
+            "Access denied: superadmin privileges required for this route.",
+        ));
+    }
+
+    if let Some(tenant_id) = tenant_route_id(path) {
+        if !session.tenants.iter().any(|tenant| tenant.id == tenant_id) {
+            return Err(error_response(
+                StatusCode::FORBIDDEN,
+                "Access denied: tenant administrator privileges required for this tenant.",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_allowed_tenant_admin_route(method: &Method, path: &str) -> bool {
+    if matches!(
+        (method, path),
+        (&Method::GET, "/admin")
+            | (&Method::POST, "/admin/tenant/switch")
+            | (&Method::GET, "/admin/account")
+            | (&Method::POST, "/admin/account/passkeys/register-options")
+            | (&Method::POST, "/admin/account/passkeys/register-complete")
+    ) {
+        return true;
+    }
+
+    if path.starts_with("/admin/account/passkeys/") && *method == Method::DELETE {
+        return true;
+    }
+
+    matches!(
+        tenant_route_access(method, path),
+        Some(TenantRouteAccess::View | TenantRouteAccess::Invite | TenantRouteAccess::RemoveMember)
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TenantRouteAccess {
+    View,
+    Invite,
+    RemoveMember,
+}
+
+fn tenant_route_id(path: &str) -> Option<&str> {
+    let (tenant_id, _) = tenant_route_access_parts(path)?;
+    if tenant_id.is_empty() {
+        None
+    } else {
+        Some(tenant_id)
+    }
+}
+
+fn tenant_route_access(method: &Method, path: &str) -> Option<TenantRouteAccess> {
+    let (tenant_id, remainder) = tenant_route_access_parts(path)?;
+    if tenant_id.is_empty() {
+        return None;
+    }
+
+    match (method, remainder) {
+        (&Method::GET, None) => Some(TenantRouteAccess::View),
+        (&Method::POST, Some("invite")) => Some(TenantRouteAccess::Invite),
+        (&Method::DELETE, Some(member_path)) if member_path.starts_with("members/") => {
+            Some(TenantRouteAccess::RemoveMember)
+        }
+        _ => None,
+    }
+}
+
+fn tenant_route_access_parts(path: &str) -> Option<(&str, Option<&str>)> {
+    let rest = path.strip_prefix("/admin/tenants/")?;
+    let (tenant_id, remainder) = match rest.split_once('/') {
+        Some((tenant_id, remainder)) => (tenant_id, Some(remainder)),
+        None => (rest, None),
+    };
+    Some((tenant_id, remainder))
+}
+
 fn verify_admin_csrf(
     headers: &HeaderMap,
     body: &[u8],
     session: &AdminSession,
 ) -> Result<(), Response<String>> {
     use subtle::ConstantTimeEq;
-
-    // 1. Bearer token authenticated requests (API clients) are not vulnerable to browser CSRF
-    if let Some(auth_hdr) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && (auth_hdr.starts_with("Bearer ") || auth_hdr.starts_with("bearer "))
-    {
-        return Ok(());
-    }
-
-    // 2. Check x-csrf-token or hx-csrf-token header (HTMX)
+    // 1. Check x-csrf-token or hx-csrf-token header (HTMX)
     let header_csrf = headers
         .get("x-csrf-token")
         .or_else(|| headers.get("hx-csrf-token"))
@@ -1060,7 +1147,7 @@ fn verify_admin_csrf(
         return Ok(());
     }
 
-    // 3. Check form body
+    // 2. Check form body
     let form = parse_form(body);
     let form_csrf = form_value(&form, "csrf_token").unwrap_or("");
     if !form_csrf.is_empty()
@@ -1088,7 +1175,7 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
         && let Ok(claims) = crate::service_client::verify_token_scoped(
             token,
             Some(&crate::get_issuer()),
-            None,
+            Some("lid-admin"),
             Some("access"),
         )
         .await
@@ -1096,7 +1183,7 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
         && let Ok(Some(u)) = store::get_user(sub).await
     {
         user_opt = Some(u);
-        csrf_token_opt = Some(store::random_hex(24));
+        csrf_token_opt = Some(store::sha256_hex(&format!("csrf:{token}"))[..24].to_string());
     }
 
     // Check Cookies (lid_account or lid_session)
@@ -1163,7 +1250,10 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
     if is_super {
         tenants = store::list_tenants().await.unwrap_or_default();
     } else {
-        for m in &memberships {
+        for m in memberships
+            .iter()
+            .filter(|m| m.role == "owner" || m.role == "admin")
+        {
             if let Ok(Some(t)) = store::get_tenant(&m.tenant_id).await {
                 tenants.push(t);
             }
@@ -1869,10 +1959,44 @@ mod tests {
     use super::*;
     use http::HeaderMap;
 
+    fn tenant_admin_session() -> AdminSession {
+        AdminSession {
+            user: User {
+                id: "user1".to_string(),
+                email: "tenant-admin@example.com".to_string(),
+                name: "Tenant Admin".to_string(),
+                password_hash: "hash".to_string(),
+                status: "active".to_string(),
+                created_at: 0,
+                superadmin: false,
+                totp_secret: None,
+                totp_enabled: false,
+                recovery_codes: vec![],
+                passkey_credentials: vec![],
+            },
+            is_superadmin: false,
+            current_tenant: Some(Tenant {
+                id: "tenant_a".to_string(),
+                name: "tenant-a".to_string(),
+                display_name: "Tenant A".to_string(),
+                status: "active".to_string(),
+                created_at: 0,
+            }),
+            tenants: vec![Tenant {
+                id: "tenant_a".to_string(),
+                name: "tenant-a".to_string(),
+                display_name: "Tenant A".to_string(),
+                status: "active".to_string(),
+                created_at: 0,
+            }],
+            csrf_token: "csrf-token-12345".to_string(),
+        }
+    }
+
     #[test]
-    fn test_verify_admin_csrf_with_bearer_token() {
+    fn test_verify_admin_csrf_rejects_bearer_without_csrf_token() {
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer test-jwt-token".parse().unwrap());
+        headers.insert("authorization", "******".parse().unwrap());
         let session = AdminSession {
             user: User {
                 id: "user1".to_string(),
@@ -1893,8 +2017,51 @@ mod tests {
             csrf_token: "csrf-token-12345".to_string(),
         };
 
-        // Bearer token requests should bypass CSRF validation
-        assert!(verify_admin_csrf(&headers, b"name=value", &session).is_ok());
+        let res = verify_admin_csrf(&headers, b"name=value", &session);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_authorize_admin_route_blocks_global_routes_for_tenant_admin() {
+        let session = tenant_admin_session();
+
+        let res = authorize_admin_route(&session, &Method::GET, "/admin/clients");
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_authorize_admin_route_allows_owned_tenant_management() {
+        let session = tenant_admin_session();
+
+        assert!(authorize_admin_route(&session, &Method::GET, "/admin/tenants/tenant_a").is_ok());
+        assert!(
+            authorize_admin_route(&session, &Method::POST, "/admin/tenants/tenant_a/invite")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_authorize_admin_route_blocks_other_tenants_and_deletes() {
+        let session = tenant_admin_session();
+
+        let other_tenant = authorize_admin_route(&session, &Method::GET, "/admin/tenants/tenant_b");
+        assert!(other_tenant.is_err());
+        assert_eq!(other_tenant.unwrap_err().status(), StatusCode::FORBIDDEN);
+
+        let delete_tenant =
+            authorize_admin_route(&session, &Method::DELETE, "/admin/tenants/tenant_a");
+        assert!(delete_tenant.is_err());
+        assert_eq!(delete_tenant.unwrap_err().status(), StatusCode::FORBIDDEN);
+
+        let unknown_subroute =
+            authorize_admin_route(&session, &Method::GET, "/admin/tenants/tenant_a/settings");
+        assert!(unknown_subroute.is_err());
+        assert_eq!(
+            unknown_subroute.unwrap_err().status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]
