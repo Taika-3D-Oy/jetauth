@@ -298,7 +298,12 @@ pub async fn handle_admin_route(
                     })
                     .collect()
             };
-            html_response(views::users::render_users_table(&filtered).into_string())
+            let mut user_tenants = std::collections::HashMap::new();
+            for u in &filtered {
+                let tenants = store::list_user_tenants(&u.id).await.unwrap_or_default();
+                user_tenants.insert(u.id.clone(), tenants);
+            }
+            html_response(views::users::render_users_table(&filtered, &user_tenants).into_string())
         }
 
         // ── Identity Providers ──
@@ -804,6 +809,88 @@ async fn handle_parameterized_route(
                     )
                     .await;
                 }
+                let return_to = headers
+                    .get("hx-current-url")
+                    .or_else(|| headers.get("referer"))
+                    .and_then(|h| h.to_str().ok())
+                    .filter(|s| s.ends_with("/admin/users"))
+                    .map(|_| "/admin/users")
+                    .unwrap_or("");
+                if return_to.is_empty() {
+                    return redirect_response(&format!("/admin/users/{id}"));
+                } else {
+                    return redirect_response(return_to);
+                }
+            }
+            if sub == "modal/add-tenant" && method == Method::GET {
+                if let Ok(Some(user)) = store::get_user(id).await {
+                    let tenants = store::list_tenants().await.unwrap_or_default();
+                    return html_response(
+                        views::users::render_add_user_tenant_modal(&user, &tenants).into_string(),
+                    );
+                }
+            }
+            if sub == "tenants" && method == Method::POST {
+                let form = parse_form(body);
+                let tenant_id = form_value(&form, "tenant_id").unwrap_or("").trim();
+                let role = form_value(&form, "role").unwrap_or("member").trim();
+                let valid_roles = ["owner", "admin", "manager", "member"];
+                let role = if valid_roles.contains(&role) { role } else { "member" };
+
+                if !tenant_id.is_empty() {
+                    if let Ok(Some(user)) = store::get_user(id).await {
+                        // Ensure tenant exists, or create it if custom ID specified
+                        if let Ok(None) = store::get_tenant(tenant_id).await {
+                            let tenant = store::Tenant {
+                                id: tenant_id.to_string(),
+                                name: tenant_id.to_string(),
+                                display_name: tenant_id.to_string(),
+                                status: "active".to_string(),
+                                created_at: store::unix_now(),
+                            };
+                            let _ = store::create_tenant(&tenant).await;
+                        }
+                        let membership = store::Membership {
+                            tenant_id: tenant_id.to_string(),
+                            user_id: user.id.clone(),
+                            role: role.to_string(),
+                            joined_at: store::unix_now(),
+                        };
+                        let _ = store::add_membership(&membership).await;
+                        let _ = store::log_audit(
+                            "admin_add_tenant_member",
+                            &session.user.id,
+                            &user.id,
+                            &format!("tenant={tenant_id} role={role}"),
+                        )
+                        .await;
+                    }
+                }
+
+                let return_to = headers
+                    .get("hx-current-url")
+                    .or_else(|| headers.get("referer"))
+                    .and_then(|h| h.to_str().ok())
+                    .filter(|s| s.ends_with("/admin/users"))
+                    .map(|_| "/admin/users")
+                    .unwrap_or("");
+                if return_to.is_empty() {
+                    return redirect_response(&format!("/admin/users/{id}"));
+                } else {
+                    return redirect_response(return_to);
+                }
+            }
+            if let Some(tenant_id) = sub.strip_prefix("tenants/")
+                && method == Method::DELETE
+            {
+                let _ = store::remove_membership(tenant_id, id).await;
+                let _ = store::log_audit(
+                    "admin_remove_tenant_member",
+                    &session.user.id,
+                    id,
+                    &format!("tenant={tenant_id}"),
+                )
+                .await;
                 let return_to = headers
                     .get("hx-current-url")
                     .or_else(|| headers.get("referer"))

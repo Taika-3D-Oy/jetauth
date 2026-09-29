@@ -354,23 +354,31 @@ pub async fn apply_outcome(user: &mut User, outcome: &HookOutcome) -> Result<(),
         // Only add if not already a member
         let existing = store::list_user_tenants(&user.id).await.unwrap_or_default();
         if !existing.iter().any(|m| m.tenant_id == *tenant_id) {
-            // Verify the tenant exists
-            if store::get_tenant(tenant_id).await?.is_some() {
-                let membership = store::Membership {
-                    tenant_id: tenant_id.clone(),
-                    user_id: user.id.clone(),
-                    role: role.clone(),
-                    joined_at: store::unix_now(),
+            // Verify or ensure the tenant exists
+            if store::get_tenant(tenant_id).await?.is_none() {
+                let tenant = store::Tenant {
+                    id: tenant_id.clone(),
+                    name: tenant_id.clone(),
+                    display_name: tenant_id.clone(),
+                    status: "active".to_string(),
+                    created_at: store::unix_now(),
                 };
-                store::add_membership(&membership).await?;
-                let _ = store::log_audit(
-                    "hook_add_to_tenant",
-                    "system",
-                    &user.id,
-                    &format!("tenant={tenant_id} role={role}"),
-                )
-                .await;
+                let _ = store::create_tenant(&tenant).await;
             }
+            let membership = store::Membership {
+                tenant_id: tenant_id.clone(),
+                user_id: user.id.clone(),
+                role: role.clone(),
+                joined_at: store::unix_now(),
+            };
+            store::add_membership(&membership).await?;
+            let _ = store::log_audit(
+                "hook_add_to_tenant",
+                "system",
+                &user.id,
+                &format!("tenant={tenant_id} role={role}"),
+            )
+            .await;
         }
     }
 

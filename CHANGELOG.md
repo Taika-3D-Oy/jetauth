@@ -5,13 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0-rc.1] - 2026-09-24
+## [2.0.0-rc.2] - 2026-09-29
 
 ### Rebranding & Major Architecture Upgrade
 
 - **Admin UI & Account Management**:
   - Restored global `Users` navigation link in admin sidebar (`/admin/users`).
   - Added one-click account activation for pending/suspended users in the users table and user detail page (`POST /admin/users/:id/activate`) with full audit logging.
+  - Added inline tenant badges and `+ Tenant` assignment modal directly in the `/admin/users` table, allowing administrators to assign any user to any tenant organization with customizable roles (`member`, `admin`, `manager`, `owner`).
+  - Added full Tenant Memberships management card to user detail page (`/admin/users/:id`) with one-click removal and add-to-tenant capabilities.
   - Added `set_active(bool)` support in Rhai scripting hooks, allowing automatic or conditional user activation during registration and login flows.
 - **Project Rebranding to `jetauth`**:
   - Rebranded `lattice-id` to **`jetauth`** across workspace manifests, deployment descriptors, build tooling, and documentation.
