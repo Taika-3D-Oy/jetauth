@@ -76,6 +76,14 @@ pub fn render_users_table(users: &[User]) -> Markup {
                                 }
                                 td class="mono-sm" { (relative_time(u.created_at)) }
                                 td class="actions" {
+                                    @if u.status != "active" {
+                                        button class="btn btn-xs btn-success"
+                                               hx-post={"/admin/users/" (u.id) "/activate"}
+                                               hx-confirm={"Activate user account for '" (u.email) "'?"}
+                                               hx-target="body" {
+                                            "Activate"
+                                        }
+                                    }
                                     a href={"/admin/users/" (u.id)} class="btn btn-xs" { "Manage →" }
                                     button class="btn btn-xs btn-danger"
                                            hx-delete={"/admin/users/" (u.id)}
@@ -139,6 +147,15 @@ pub async fn render_user_detail_page(
                 span class="card-title" { "Security Actions" }
             }
             div style="display: flex; gap: 12px; flex-wrap: wrap;" {
+                @if user.status != "active" {
+                    button class="btn btn-success"
+                           hx-post={"/admin/users/" (user.id) "/activate"}
+                           hx-confirm={"Activate user account for " (user.email) "?"}
+                           hx-target="body" {
+                        "Activate Account"
+                    }
+                }
+
                 button class="btn"
                        hx-post={"/admin/users/" (user.id) "/password-reset"}
                        hx-confirm={"Send password reset email to " (user.email) "?"}

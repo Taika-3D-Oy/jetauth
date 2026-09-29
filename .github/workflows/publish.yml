@@ -75,21 +75,20 @@ jobs:
           IMAGE_PREFIX: ${{ steps.prefix.outputs.prefix }}
         run: |
           components=(oidc-gateway password-hasher email-worker)
-          for comp in "${components[@]}"; do
-            wasm="${comp//-/_}"
-            echo "==> Pushing ${comp}:${TAG}"
-            oras push "${IMAGE_PREFIX}/${comp}:${TAG}" \
-              "target/wasm32-wasip2/release/${wasm}.wasm:application/wasm"
-          done
-
-          # Also tag as latest
-          if [[ "${TAG}" != "latest" ]]; then
+          prefixes=("${IMAGE_PREFIX}" "ghcr.io/taika-3d-oy/lattice-id")
+          for prefix in "${prefixes[@]}"; do
             for comp in "${components[@]}"; do
               wasm="${comp//-/_}"
-              oras push "${IMAGE_PREFIX}/${comp}:latest" \
-                "target/wasm32-wasip2/release/${wasm}.wasm:application/wasm"
+              echo "==> Pushing ${prefix}/${comp}:${TAG}"
+              oras push "${prefix}/${comp}:${TAG}" \
+                "target/wasm32-wasip2/release/${wasm}.wasm:application/wasm" || true
+              if [[ "${TAG}" != "latest" ]]; then
+                echo "==> Pushing ${prefix}/${comp}:latest"
+                oras push "${prefix}/${comp}:latest" \
+                  "target/wasm32-wasip2/release/${wasm}.wasm:application/wasm" || true
+              fi
             done
-          fi
+          done
 
       - name: Summary
         env:

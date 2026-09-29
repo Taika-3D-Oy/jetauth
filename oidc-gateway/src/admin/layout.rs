@@ -88,6 +88,9 @@ pub fn render_layout(
 
                     div class="sidebar-divider" {}
                     div class="sidebar-section-label" { "Global" }
+                    a href="/admin/users" class={"sidebar-link" @if active_nav == "users" { " active" }} {
+                        "Users"
+                    }
                     a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
                         "Tenants"
                     }

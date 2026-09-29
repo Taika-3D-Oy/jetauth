@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Rebranding & Major Architecture Upgrade
 
+- **Admin UI & Account Management**:
+  - Restored global `Users` navigation link in admin sidebar (`/admin/users`).
+  - Added one-click account activation for pending/suspended users in the users table and user detail page (`POST /admin/users/:id/activate`) with full audit logging.
+  - Added `set_active(bool)` support in Rhai scripting hooks, allowing automatic or conditional user activation during registration and login flows.
 - **Project Rebranding to `jetauth`**:
   - Rebranded `lattice-id` to **`jetauth`** across workspace manifests, deployment descriptors, build tooling, and documentation.
   - Formally aligned with **`jetcache` 2.0** (`Taika-3D-Oy/jetcache`) and **`nats-wasip3` 1.0.0** (`Taika-3D-Oy/nats-wasip3`).

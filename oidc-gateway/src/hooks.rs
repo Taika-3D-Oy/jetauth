@@ -25,6 +25,8 @@ pub struct HookOutcome {
     pub deny_reason: Option<String>,
     /// Whether to set the user as superadmin.
     pub set_superadmin: Option<bool>,
+    /// Whether to explicitly set user account active/suspended status.
+    pub set_active: Option<bool>,
     /// Tenants to create from the hook: (id, name, display_name).
     pub create_tenants: Vec<(String, String, String)>,
     /// Tenant memberships to add: (tenant_id, role).
@@ -40,6 +42,7 @@ pub struct HookOutcome {
 struct HookAccumulator {
     deny_reason: Rc<RefCell<Option<String>>>,
     set_superadmin: Rc<RefCell<Option<bool>>>,
+    set_active: Rc<RefCell<Option<bool>>>,
     create_tenants: Rc<RefCell<Vec<(String, String, String)>>>,
     add_to_tenants: Rc<RefCell<Vec<(String, String)>>>,
     extra_claims: Rc<RefCell<Vec<(String, String)>>>,
@@ -51,6 +54,7 @@ impl HookAccumulator {
         HookOutcome {
             deny_reason: self.deny_reason.take(),
             set_superadmin: self.set_superadmin.take(),
+            set_active: self.set_active.take(),
             create_tenants: self.create_tenants.take(),
             add_to_tenants: self.add_to_tenants.take(),
             extra_claims: self.extra_claims.take(),
@@ -106,6 +110,11 @@ fn create_engine(acc: &HookAccumulator) -> Engine {
     let sa_ref = acc.set_superadmin.clone();
     engine.register_fn("set_superadmin", move |val: bool| {
         *sa_ref.borrow_mut() = Some(val);
+    });
+
+    let active_ref = acc.set_active.clone();
+    engine.register_fn("set_active", move |val: bool| {
+        *active_ref.borrow_mut() = Some(val);
     });
 
     let tenant_ref = acc.add_to_tenants.clone();
@@ -280,15 +289,35 @@ pub async fn apply_outcome(user: &mut User, outcome: &HookOutcome) -> Result<(),
         }
     }
 
+    let mut target_status = None;
+    if let Some(active) = outcome.set_active {
+        let new_status = if active { "active" } else { "suspended" };
+        if user.status != new_status {
+            changed = true;
+            target_status = Some(new_status.to_string());
+            let _ = store::log_audit(
+                "hook_set_status",
+                "system",
+                &user.id,
+                &format!("status={new_status}"),
+            )
+            .await;
+        }
+    }
+
     if changed {
         let set_sa = outcome.set_superadmin;
         let require_verification = crate::require_email_verification();
+        let status_override = target_status;
         store::update_user_rmw(&user.id, |u| {
             if let Some(sa) = set_sa {
                 u.superadmin = sa;
                 if sa && !require_verification && u.status != "active" {
                     u.status = "active".to_string();
                 }
+            }
+            if let Some(ref st) = status_override {
+                u.status = st.clone();
             }
             Ok(true)
         })
@@ -807,5 +836,19 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.create_tenants.len(), 1);
         assert_eq!(outcome.create_tenants[0].0, "my-org-2");
+    }
+
+    #[test]
+    fn test_set_active_hook() {
+        let outcome = test_hook(
+            r#"
+            if user.email == "test@example.com" {
+                set_active(true);
+            }
+            "#,
+            "post-registration",
+        )
+        .unwrap();
+        assert_eq!(outcome.set_active, Some(true));
     }
 }

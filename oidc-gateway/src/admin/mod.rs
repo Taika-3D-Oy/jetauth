@@ -523,7 +523,7 @@ pub async fn handle_admin_route(
 async fn handle_parameterized_route(
     method: &Method,
     path: &str,
-    _headers: &HeaderMap,
+    headers: &HeaderMap,
     body: &[u8],
     session: &AdminSession,
 ) -> Response<String> {
@@ -792,6 +792,31 @@ async fn handle_parameterized_route(
     // ── Single User Detail & Subroutes ──
     if let Some(rest) = path.strip_prefix("/admin/users/") {
         if let Some((id, sub)) = rest.split_once('/') {
+            if sub == "activate" && method == Method::POST {
+                if let Ok(Some(mut user)) = store::get_user(id).await {
+                    user.status = "active".to_string();
+                    let _ = store::update_user(&user).await;
+                    let _ = store::log_audit(
+                        "user_activated_by_admin",
+                        &session.user.id,
+                        &user.id,
+                        &format!("admin={}", session.user.email),
+                    )
+                    .await;
+                }
+                let return_to = headers
+                    .get("hx-current-url")
+                    .or_else(|| headers.get("referer"))
+                    .and_then(|h| h.to_str().ok())
+                    .filter(|s| s.ends_with("/admin/users"))
+                    .map(|_| "/admin/users")
+                    .unwrap_or("");
+                if return_to.is_empty() {
+                    return redirect_response(&format!("/admin/users/{id}"));
+                } else {
+                    return redirect_response(return_to);
+                }
+            }
             if sub == "password-reset" && method == Method::POST {
                 if let Ok(Some(user)) = store::get_user(id).await {
                     let reset_token = store::random_hex(32);
