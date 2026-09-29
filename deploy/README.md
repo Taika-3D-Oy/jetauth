@@ -1,17 +1,20 @@
 # JetAuth Deployment Manifests
 
+> **⚠️ DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION.**
+> These manifests and configs are for integration testing and deployment simulation only. They run with no auth/TLS on NATS, dev secrets, `dev_mode` flags, and a `bootstrap_hook` that grants `set_superadmin(true)` to the first registrant while `allow_registration: "true"` is set. See SECURITY.md for production hardening.
+
 This directory contains declarative Kubernetes and wasmCloud manifests for deploying JetAuth alongside [jetcache](https://github.com/Taika-3D-Oy/jetcache).
 
 ## Manifest Overview
 
 | File | Description |
 |------|-------------|
-| `workloaddeployment-ghcr.yaml` | Production/staging deployment using published GHCR OCI components |
+| `workloaddeployment-ghcr.yaml` | Production/staging deployment using published GHCR OCI components (dev/simulation only — contains the first-registrant superadmin `bootstrap_hook` described above) |
 | `workloaddeployment-local.yaml` | Local development deployment targeting a local registry |
 | `workloaddeployment-local-prod.yaml` | Local configuration simulating production email & registration settings |
 | `workloaddeployment-eu.yaml` | Multi-region EU authority manifest |
 | `workloaddeployment-us.yaml` | Multi-region US authority manifest |
-| `nats-data.conf` | Standalone JetStream configuration for state persistence |
+| `nats-data.conf` | Standalone JetStream configuration for state persistence (no auth/TLS — dev only) |
 | `kind-config.yaml` | Sample Kind cluster definition with NodePort exposure |
 
 ---

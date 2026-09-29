@@ -66,7 +66,10 @@ async fn hinted_email(session_id: &str) -> Option<String> {
 /// Render the login page HTML with theming, optional Google button, and optional MFA.
 pub async fn login_page(session_id: &str, error: Option<&str>) -> Response<String> {
     let theme = resolve_theme(session_id).await;
-    let hinted_email = hinted_email(session_id).await.unwrap_or_default();
+    let hinted_email = util::html_escape(&hinted_email(session_id).await.unwrap_or_default());
+    let session_id_html = util::html_escape(session_id);
+    let session_id_url = util::percent_encode(session_id);
+    let session_id_js = util::js_string_escape(session_id);
     let app_name = util::html_escape(&theme.app_name);
     let head_tags = crate::theme::render_head_tags(&theme);
     let css_vars = crate::theme::render_css_variables(&theme);
@@ -94,7 +97,7 @@ pub async fn login_page(session_id: &str, error: Option<&str>) -> Response<Strin
         match idp.provider_type.as_str() {
             "google" => {
                 idp_buttons.push_str(&format!(
-                    r##"<a href="/auth/google?session_id={session_id}" class="google-btn" style="margin-top: 8px;">
+                    r##"<a href="/auth/google?session_id={session_id_url}" class="google-btn" style="margin-top: 8px;">
 <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
 Continue with Google
 </a>"##
@@ -102,7 +105,7 @@ Continue with Google
             }
             "github" => {
                 idp_buttons.push_str(&format!(
-                    r##"<a href="/auth/github?session_id={session_id}" class="google-btn" style="margin-top: 8px;">
+                    r##"<a href="/auth/github?session_id={session_id_url}" class="google-btn" style="margin-top: 8px;">
 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
 Continue with GitHub
 </a>"##
@@ -110,7 +113,7 @@ Continue with GitHub
             }
             "microsoft" => {
                 idp_buttons.push_str(&format!(
-                    r##"<a href="/auth/microsoft?session_id={session_id}" class="google-btn" style="margin-top: 8px;">
+                    r##"<a href="/auth/microsoft?session_id={session_id_url}" class="google-btn" style="margin-top: 8px;">
 <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#F25022" d="M1 1h10v10H1z"/><path fill="#7FBA00" d="M13 1h10v10H13z"/><path fill="#00A4EF" d="M1 13h10v10H1z"/><path fill="#FFB900" d="M13 13h10v10H13z"/></svg>
 Continue with Microsoft
 </a>"##
@@ -164,7 +167,7 @@ button:hover,.passkey-btn:hover{{background:var(--primary-hover);transform:trans
 <p class="sub">{app_name}</p>
 {error_html}
 <form method="POST" action="/login" id="login-form">
-<input type="hidden" name="session_id" value="{session_id}">
+<input type="hidden" name="session_id" value="{session_id_html}">
 <label for="email">Email</label>
 <input type="email" id="email" name="email" value="{hinted_email}" required autocomplete="email" autofocus>
 <label for="password">Password</label>
@@ -220,7 +223,7 @@ Sign in with passkey
       var cred=await navigator.credentials.get({{publicKey:opts}});
       var body=JSON.stringify({{
         token:d.token,
-        session_id:'{session_id}',
+        session_id:'{session_id_js}',
         credential_id:b64url(cred.rawId),
         clientDataJSON:b64url(cred.response.clientDataJSON),
         authenticatorData:b64url(cred.response.authenticatorData),
@@ -265,6 +268,8 @@ if(f)f.addEventListener('submit',function(){{
 /// Render MFA challenge page (TOTP code input).
 pub async fn mfa_page(mfa_token: &str, session_id: &str, error: Option<&str>) -> Response<String> {
     let theme = resolve_theme(session_id).await;
+    let mfa_token_html = util::html_escape(mfa_token);
+    let session_id_html = util::html_escape(session_id);
     let app_name = util::html_escape(&theme.app_name);
     let head_tags = crate::theme::render_head_tags(&theme);
     let css_vars = crate::theme::render_css_variables(&theme);
@@ -311,8 +316,8 @@ button:hover{{background:var(--primary-hover);transform:translateY(-1px)}}
 <p class="sub">Enter the code from your authenticator app</p>
 {error_html}
 <form method="POST" action="/login/mfa" id="mfa-form">
-<input type="hidden" name="mfa_token" value="{mfa_token}">
-<input type="hidden" name="session_id" value="{session_id}">
+<input type="hidden" name="mfa_token" value="{mfa_token_html}">
+<input type="hidden" name="session_id" value="{session_id_html}">
 <label for="code">Authentication Code</label>
 <input type="text" id="code" name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{{6,8}}" maxlength="8" autofocus>
 <button type="submit" id="mfa-btn">Verify</button>
@@ -339,12 +344,50 @@ if(f)f.addEventListener('submit',function(){{
         .unwrap()
 }
 
+/// Session IDs are always server-generated via store::random_hex (lowercase hex).
+pub fn is_valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Generic error page for malformed sign-in requests (no session context).
+pub fn generic_error_page(msg: &str) -> Response<String> {
+    let msg = util::html_escape(msg);
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign-in Error</title>
+<style>body{{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc;color:#0f172a}}.card{{max-width:400px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:32px;text-align:center}}h1{{font-size:20px;margin-bottom:8px}}p{{font-size:14px;color:#475569}}a{{color:#0f766e}}</style>
+</head>
+<body><div class="card"><h1>Sign-in Error</h1><p>{msg}</p><p><a href="/">Start over</a></p></div></body>
+</html>"#
+    );
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .body(html)
+        .unwrap()
+}
+
 /// Handle POST /login — validate credentials, check MFA, issue auth code, redirect.
-pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response<String>, String> {
+pub async fn handle_login(
+    body_bytes: &[u8],
+    remote_ip: &str,
+    headers: &http::HeaderMap,
+) -> Result<Response<String>, String> {
     let form = util::parse_form(body_bytes);
     let session_id = util::form_value(&form, "session_id").ok_or("missing session_id")?;
     let email = util::form_value(&form, "email").ok_or("missing email")?;
     let password = util::form_value(&form, "password").ok_or("missing password")?;
+
+    if !is_valid_session_id(session_id) {
+        return Ok(generic_error_page(
+            "Invalid sign-in session. Please start over.",
+        ));
+    }
 
     // Task 2.8: Suspicious login detection (Log IP)
     let _ = crate::store::log_audit(
@@ -372,7 +415,13 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
             .await);
         }
         Err(e) => {
+            // Fail closed: when the limiter is unavailable, deny the attempt.
             crate::logger::error_message("rate_limit.login_check_failed", e);
+            return Ok(login_page(
+                session_id,
+                Some("Too many login attempts. Please wait and try again."),
+            )
+            .await);
         }
         _ => {}
     }
@@ -381,6 +430,20 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
     let session = crate::store::get_auth_session(session_id)
         .await?
         .ok_or("invalid or expired session")?;
+
+    // Browser binding: the lid_flow cookie set at /authorize must match this
+    // session (login-CSRF protection). Device-flow sessions are created by
+    // /device instead and are exempt.
+    if session.code_challenge_method != "device"
+        && !crate::account::flow_cookie_matches(headers, session_id)
+    {
+        let _ = crate::store::log_audit("login_flow_cookie_mismatch", "", "", remote_ip).await;
+        return Ok(login_page(
+            session_id,
+            Some("Your sign-in session could not be verified. Please start over."),
+        )
+        .await);
+    }
 
     // Check auth session expiry (e.g., 10 minutes)
     if crate::store::unix_now() > session.created_at + 600 {
@@ -444,28 +507,9 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
         }
     };
 
-    // Check account lockout
-    if crate::store::is_account_locked(&user.id).await? {
-        // Perform a dummy password hash to prevent timing-based lockout enumeration.
-        let _ = crate::service_client::verify_password(
-            password,
-            "$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        ).await;
-        let _ = crate::store::log_audit("login_locked", &user.id, &user.id, "account locked").await;
-        let _ = crate::service_client::increment_metric(
-            "lattice_id_login_attempts_total",
-            &[("flow", "password"), ("result", "failure")],
-        )
-        .await;
-        return Ok(login_page(
-            session_id,
-            Some(
-                "Account temporarily locked due to too many failed attempts. Please try again later.",
-            ),
-        ).await);
-    }
-
-    // Verify password via password-hasher
+    // Verify password FIRST via password-hasher. Lockout state is only
+    // revealed after a CORRECT password, so a wrong password always gets the
+    // same generic error (prevents email-existence and lockout enumeration).
     match crate::service_client::verify_password(password, &user.password_hash).await {
         Ok(true) => {}
         Ok(false) => {
@@ -486,11 +530,6 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
                     "locked after repeated failures",
                 )
                 .await;
-                return Ok(login_page(
-                    session_id,
-                    Some("Account temporarily locked due to too many failed attempts."),
-                )
-                .await);
             }
             return Ok(login_page(session_id, Some("Invalid email or password")).await);
         }
@@ -505,6 +544,22 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
             .await;
             return Ok(login_page(session_id, Some("Invalid email or password")).await);
         }
+    }
+
+    // Password correct — only now is it safe to reveal account lockout.
+    if crate::store::is_account_locked(&user.id).await? {
+        let _ = crate::store::log_audit("login_locked", &user.id, &user.id, "account locked").await;
+        let _ = crate::service_client::increment_metric(
+            "lattice_id_login_attempts_total",
+            &[("flow", "password"), ("result", "failure")],
+        )
+        .await;
+        return Ok(login_page(
+            session_id,
+            Some(
+                "Account temporarily locked due to too many failed attempts. Please try again later.",
+            ),
+        ).await);
     }
 
     // Password verified — check if MFA is required
@@ -526,11 +581,21 @@ pub async fn handle_login(body_bytes: &[u8], remote_ip: &str) -> Result<Response
 }
 
 /// Handle POST /login/mfa — verify TOTP code and complete login.
-pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<String>, String> {
+pub async fn handle_mfa(
+    body_bytes: &[u8],
+    _remote_ip: &str,
+    headers: &http::HeaderMap,
+) -> Result<Response<String>, String> {
     let form = util::parse_form(body_bytes);
     let mfa_token = util::form_value(&form, "mfa_token").ok_or("missing mfa_token")?;
     let session_id = util::form_value(&form, "session_id").ok_or("missing session_id")?;
     let code = util::form_value(&form, "code").ok_or("missing code")?;
+
+    if !is_valid_session_id(session_id) {
+        return Ok(generic_error_page(
+            "Invalid sign-in session. Please start over.",
+        ));
+    }
 
     // Rate limit MFA: 5 attempts per token per 15 minutes
     match crate::service_client::check_rate(&format!("mfa:{}", mfa_token), 5, 900).await {
@@ -542,7 +607,15 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
             )
             .await);
         }
-        Err(e) => crate::logger::error_message("rate_limit.mfa_check_failed", e),
+        Err(e) => {
+            // Fail closed: when the limiter is unavailable, deny the attempt.
+            crate::logger::error_message("rate_limit.mfa_check_failed", e);
+            return Ok(login_page(
+                session_id,
+                Some("Too many MFA attempts. Please wait and try again."),
+            )
+            .await);
+        }
         _ => {}
     }
 
@@ -552,6 +625,23 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
     if store::unix_now() > pending.expires_at {
         store::delete_mfa_pending(mfa_token).await?;
         return Ok(login_page(session_id, Some("MFA session expired, please log in again")).await);
+    }
+
+    // Browser binding: the lid_flow cookie set at /authorize must match this
+    // session. Device-flow sessions are created by /device and are exempt.
+    let is_device_flow = store::get_auth_session(&pending.session_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.code_challenge_method == "device")
+        .unwrap_or(false);
+    if !is_device_flow && !crate::account::flow_cookie_matches(headers, &pending.session_id) {
+        let _ = store::log_audit("mfa_flow_cookie_mismatch", &pending.user_id, "", "").await;
+        return Ok(login_page(
+            session_id,
+            Some("Your sign-in session could not be verified. Please start over."),
+        )
+        .await);
     }
 
     let user = store::get_user(&pending.user_id)
@@ -566,34 +656,48 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
     // Try TOTP code first
     if let Some(step) = crate::totp::verify_totp_step(totp_secret, code.trim()) {
         let replay_key = format!("totp_used:{}:{}", user.id, step);
-        if store::record_totp_used(&replay_key, 90)
-            .await
-            .unwrap_or(true)
-        {
-            store::delete_mfa_pending(mfa_token).await?;
-            let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
-            let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
-            return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip)
-                .await;
-        } else {
-            return Ok(login_page(
-                session_id,
-                Some("TOTP code already used. Please wait for the next code."),
-            )
-            .await);
+        match store::record_totp_used(&replay_key, 90).await {
+            Ok(true) => {
+                store::delete_mfa_pending(mfa_token).await?;
+                let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
+                let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
+                return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip)
+                    .await;
+            }
+            Ok(false) => {
+                return Ok(login_page(
+                    session_id,
+                    Some("TOTP code already used. Please wait for the next code."),
+                )
+                .await);
+            }
+            Err(e) => {
+                // Fail closed: a KV error must reject the login, never allow replay.
+                crate::logger::error_message("mfa.totp_replay_check_failed", e);
+                return Ok(login_page(
+                    session_id,
+                    Some("Authentication service unavailable. Please try again."),
+                )
+                .await);
+            }
         }
     }
 
-    // Try recovery codes — use CAS to prevent double-use across replicas
+    // Try recovery codes — the CAS closure itself reports whether the code
+    // was found and consumed, so concurrent requests with the same code
+    // cannot both succeed.
     let code_trimmed = code.trim().to_lowercase();
     let user_id = user.id.clone();
     let code_for_closure = code_trimmed.clone();
+    let mut code_found = false;
     let rmw_result =
         store::update_user_rmw(&user_id, |u| {
+            code_found = false;
             if let Some(pos) = u.recovery_codes.iter().position(|c| {
                 crate::totp::constant_time_eq(c.as_bytes(), code_for_closure.as_bytes())
             }) {
                 u.recovery_codes.remove(pos);
+                code_found = true;
                 Ok(true) // commit
             } else {
                 Ok(false) // code not found, no change
@@ -602,38 +706,27 @@ pub async fn handle_mfa(body_bytes: &[u8], _remote_ip: &str) -> Result<Response<
         .await;
 
     match rmw_result {
-        Ok(()) => {
-            // Check if the code was actually found (re-read to confirm)
+        Ok(()) if code_found => {
             let updated_user = store::get_user(&user_id).await?.ok_or("user not found")?;
-            // If the code is no longer present, it was consumed by us (or another replica — either way it's gone)
-            if !updated_user
-                .recovery_codes
-                .iter()
-                .any(|c| crate::totp::constant_time_eq(c.as_bytes(), code_trimmed.as_bytes()))
-                && user
-                    .recovery_codes
-                    .iter()
-                    .any(|c| crate::totp::constant_time_eq(c.as_bytes(), code_trimmed.as_bytes()))
-            {
-                store::delete_mfa_pending(mfa_token).await?;
-                let _ = store::log_audit(
-                    "mfa_success",
-                    &updated_user.id,
-                    &updated_user.id,
-                    "recovery_code",
-                )
-                .await;
-                let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
-                return complete_login_with_amr(
-                    &updated_user,
-                    session_id,
-                    "recovery_code",
-                    amr,
-                    &pending.remote_ip,
-                )
-                .await;
-            }
+            store::delete_mfa_pending(mfa_token).await?;
+            let _ = store::log_audit(
+                "mfa_success",
+                &updated_user.id,
+                &updated_user.id,
+                "recovery_code",
+            )
+            .await;
+            let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
+            return complete_login_with_amr(
+                &updated_user,
+                session_id,
+                "recovery_code",
+                amr,
+                &pending.remote_ip,
+            )
+            .await;
         }
+        Ok(()) => {}
         Err(e) => {
             crate::logger::error_message("mfa.recovery_code_update_failed", e);
         }
@@ -806,11 +899,15 @@ pub async fn complete_login_with_amr(
         // Set lid_session before the consent page so it is established even
         // before the final redirect (the consent POST has no cookie to set).
         let mut resp = consent_page(&code, &auth_code, &client, &user).await;
-        if let Ok(cookie) =
-            crate::account::create_idp_session_cookie(&user.id, &amr, auth_time).await
         {
             let (mut parts, body) = resp.into_parts();
-            if let Ok(val) = cookie.parse() {
+            if let Ok(val) = crate::account::create_flow_cookie(&code).parse() {
+                parts.headers.append("set-cookie", val);
+            }
+            if let Ok(cookie) =
+                crate::account::create_idp_session_cookie(&user.id, &amr, auth_time).await
+                && let Ok(val) = cookie.parse()
+            {
                 parts.headers.append("set-cookie", val);
             }
             resp = Response::from_parts(parts, body);
@@ -952,7 +1049,10 @@ button{{flex:1;padding:12px;border:none;border-radius:calc(var(--radius) * 0.7);
 }
 
 /// Handle POST /consent — user approves or denies.
-pub async fn handle_consent(body_bytes: &[u8]) -> Result<Response<String>, String> {
+pub async fn handle_consent(
+    body_bytes: &[u8],
+    headers: &http::HeaderMap,
+) -> Result<Response<String>, String> {
     let form = crate::util::parse_form(body_bytes);
     let code = crate::util::form_value(&form, "code").ok_or("missing code")?;
     let submitted_csrf = crate::util::form_value(&form, "csrf_token").unwrap_or("");
@@ -966,10 +1066,12 @@ pub async fn handle_consent(body_bytes: &[u8]) -> Result<Response<String>, Strin
         let _ = crate::store::delete_auth_code(code).await;
         return Err("authorisation code expired".into());
     }
-    if decision == "approve"
-        && !auth_code.csrf_token.is_empty()
-        && submitted_csrf != auth_code.csrf_token
-    {
+    // Browser binding: the lid_flow cookie set when the consent page was
+    // rendered must match this code.
+    if !crate::account::flow_cookie_matches(headers, code) {
+        return Err("invalid or expired authorisation flow".into());
+    }
+    if decision == "approve" && submitted_csrf != auth_code.csrf_token {
         return Err("invalid CSRF token".into());
     }
 

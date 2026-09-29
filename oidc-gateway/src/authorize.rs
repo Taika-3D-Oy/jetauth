@@ -208,6 +208,12 @@ pub async fn handle(
     let redirect_uri = get("redirect_uri").ok_or("missing redirect_uri")?;
     let state = get("state").unwrap_or("");
 
+    // Reject control characters outright (e.g. `/\t/evil.com` — browsers strip
+    // TAB per the WHATWG URL spec and would treat it as scheme-relative).
+    if redirect_uri.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err("redirect_uri contains invalid characters".into());
+    }
+
     // Validate client (auto-ensure lid-admin if requested)
     let client = match store::get_client(client_id).await? {
         Some(c) => c,
@@ -220,15 +226,17 @@ pub async fn handle(
         None => return Err(format!("unknown client_id: {client_id}")),
     };
 
-    // Validate redirect_uri before any redirects (RFC 6749 §3.1.2.4 prevents Open Redirect)
-    let is_valid_redirect = client.redirect_uris.iter().any(|u| {
-        u == redirect_uri
-            || (client.first_party
-                && (u == &format!("{issuer}{redirect_uri}")
-                    || (redirect_uri.starts_with('/')
-                        && !redirect_uri.starts_with("//")
-                        && !redirect_uri.starts_with("/\\"))))
-    });
+    // Validate redirect_uri before any redirects (RFC 6749 §3.1.2.4 prevents Open Redirect).
+    // First-party clients may use relative URIs, but only when the canonical
+    // form (issuer + relative URI) is explicitly registered — no blanket
+    // starts_with('/') acceptance.
+    let is_valid_redirect = client.redirect_uris.iter().any(|u| u == redirect_uri)
+        || (client.first_party
+            && redirect_uri.starts_with('/')
+            && client
+                .redirect_uris
+                .iter()
+                .any(|u| u == &format!("{issuer}{redirect_uri}")));
     if !is_valid_redirect {
         return Err("redirect_uri not registered for this client".into());
     }
@@ -262,7 +270,10 @@ pub async fn handle(
 
     let code_challenge = get("code_challenge");
     let code_challenge_method = get("code_challenge_method").unwrap_or("S256");
-    if code_challenge.is_some() && code_challenge_method != "S256" {
+    // Reject unconditionally (even without a code_challenge): "device" is a
+    // server-side sentinel for device-flow sessions created by /device and
+    // must never be mintable via /authorize.
+    if code_challenge_method != "S256" {
         return Ok(authorize_error_redirect(
             redirect_uri,
             state,
@@ -410,7 +421,7 @@ pub async fn handle(
                 requested_id_token_claims: claims_request.id_token_claims.clone(),
                 requested_userinfo_claims: claims_request.userinfo_claims.clone(),
                 extra_claims: vec![],
-                csrf_token: String::new(),
+                csrf_token: store::random_hex(16),
                 expires_at: store::unix_now() + 300,
                 state: state.to_string(),
                 sid: Some(sid),
@@ -434,6 +445,10 @@ pub async fn handle(
                 }
                 let resp = crate::login::consent_page(&code, &auth_code, &client, &user).await;
                 let (mut parts, body) = resp.into_parts();
+                // Bind the browser to this flow; required on consent submission.
+                if let Ok(val) = crate::account::create_flow_cookie(&code).parse() {
+                    parts.headers.append("set-cookie", val);
+                }
                 if let Some(c) = refreshed_idp
                     && let Ok(val) = c.parse()
                 {
@@ -451,7 +466,8 @@ pub async fn handle(
             let mut builder = Response::builder()
                 .status(StatusCode::FOUND)
                 .header("location", &redirect_url)
-                .header("cache-control", "no-store");
+                .header("cache-control", "no-store")
+                .header("set-cookie", crate::account::create_flow_cookie(&code));
             if let Some(c) = refreshed_idp {
                 builder = builder.header("set-cookie", c);
             }
@@ -523,8 +539,14 @@ pub async fn handle(
     };
     store::save_auth_session(&session_id, &session).await?;
 
-    // Serve login page
-    Ok(crate::login::login_page(&session_id, None).await)
+    // Serve login page, binding the browser to this flow (lid_flow cookie is
+    // required on POST /login, POST /login/mfa and the social callbacks).
+    let resp = crate::login::login_page(&session_id, None).await;
+    let (mut parts, body) = resp.into_parts();
+    if let Ok(val) = crate::account::create_flow_cookie(&session_id).parse() {
+        parts.headers.append("set-cookie", val);
+    }
+    Ok(Response::from_parts(parts, body))
 }
 
 #[cfg(test)]
@@ -856,6 +878,57 @@ mod tests {
                 res.unwrap_err()
                     .contains("MUST NOT contain other parameters")
             );
+        });
+    }
+
+    #[test]
+    fn test_authorize_rejects_non_s256_code_challenge_method_unconditionally() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "sentinel-test-client".to_string(),
+                client_secret: Some("secret".to_string()),
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "Sentinel Test Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: false,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let headers = http::HeaderMap::new();
+            // "device" is a server-side sentinel for device-flow sessions; it
+            // (and any non-S256 method) must be rejected even when no
+            // code_challenge is present.
+            for method in ["device", "plain"] {
+                let query = format!(
+                    "client_id=sentinel-test-client&redirect_uri=https://app.example.com/cb&response_type=code&scope=openid&code_challenge_method={method}"
+                );
+                let res = handle(&query, "https://auth.example.com", &headers)
+                    .await
+                    .unwrap();
+                assert_eq!(res.status(), http::StatusCode::FOUND);
+                let location = res.headers().get("location").unwrap().to_str().unwrap();
+                assert!(
+                    location.contains("error=invalid_request"),
+                    "method {method} must be rejected, got: {location}"
+                );
+            }
+
+            // Legitimate S256 request still reaches the login page.
+            let query = "client_id=sentinel-test-client&redirect_uri=https://app.example.com/cb&response_type=code&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256";
+            let res = handle(query, "https://auth.example.com", &headers)
+                .await
+                .unwrap();
+            assert_eq!(res.status(), http::StatusCode::OK);
+            assert!(res.body().contains("<html"));
         });
     }
 }

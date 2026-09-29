@@ -420,6 +420,9 @@ pub struct RefreshEntry {
     pub issued_at: u64,
     #[serde(default)]
     pub sid: Option<String>,
+    /// RFC 9449 §6: JWK thumbprint this refresh token is bound to, if issued with a DPoP proof.
+    #[serde(default)]
+    pub dpop_jkt: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1933,9 +1936,15 @@ pub async fn get_refresh_token_cas(
     }
 }
 
-/// Atomically consume a refresh token (CAS swap to consumed marker).
-pub async fn consume_refresh_token(token_hash: &str, revision: u64) -> Result<(), String> {
-    let consumed = serde_json::json!({"consumed": true});
+/// Atomically consume a refresh token (CAS swap to a consumed marker carrying
+/// the user_id, so replay is detectable even before the separate consumed: key
+/// is written).
+pub async fn consume_refresh_token(
+    token_hash: &str,
+    revision: u64,
+    user_id: &str,
+) -> Result<(), String> {
+    let consumed = serde_json::json!({"consumed": true, "user_id": user_id});
     kv_cas_swap_ttl(
         &sessions_store(),
         &format!("refresh:{token_hash}"),
@@ -1960,8 +1969,26 @@ pub async fn mark_refresh_consumed(token_hash: &str, user_id: &str) -> Result<()
 
 /// Check if a refresh token hash was previously consumed (replay detection).
 pub async fn get_consumed_refresh(token_hash: &str) -> Result<Option<String>, String> {
-    match kv_get_raw(&sessions_store(), &format!("consumed:{token_hash}")).await? {
-        Some(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
+    if let Some(bytes) = kv_get_raw(&sessions_store(), &format!("consumed:{token_hash}")).await? {
+        return Ok(Some(String::from_utf8_lossy(&bytes).to_string()));
+    }
+    // Fall back to the CAS-swapped refresh entry itself, which carries the
+    // consumed marker until it is deleted after rotation.
+    match kv_get_raw(&sessions_store(), &format!("refresh:{token_hash}")).await? {
+        Some(bytes) => {
+            let marker: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            };
+            if marker.get("consumed").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(marker
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()))
+            } else {
+                Ok(None)
+            }
+        }
         None => Ok(None),
     }
 }
@@ -2097,14 +2124,13 @@ pub async fn delete_pushed_auth_request(request_uri: &str) -> Result<(), String>
 pub async fn check_and_record_jti(jti: &str, ttl: u64) -> Result<(), String> {
     let key = format!("jti:{jti}");
     let store_name = sessions_store();
-    if kv_get::<serde_json::Value>(&store_name, &key)
-        .await?
-        .is_some()
-    {
-        return Err("replay detected".into());
+    let marker = serde_json::to_vec(&serde_json::json!({ "used_at": unix_now() }))
+        .map_err(|e| format!("serialize: {e}"))?;
+    match kv_create_raw(&store_name, &key, &marker, Some(ttl)).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.contains("already exists") => Err("replay detected".into()),
+        Err(e) => Err(e),
     }
-    let marker = serde_json::json!({ "used_at": unix_now() });
-    kv_set_ttl(&store_name, &key, &marker, ttl).await
 }
 
 // ── Tenant operations ───────────────────────────────────────
@@ -2501,6 +2527,14 @@ pub async fn get_social_identity(
     provider_sub: &str,
 ) -> Result<Option<SocialIdentity>, String> {
     kv_get(
+        &user_idx_store(),
+        &format!("social:{provider}:{provider_sub}"),
+    )
+    .await
+}
+
+pub async fn delete_social_identity(provider: &str, provider_sub: &str) -> Result<(), String> {
+    kv_delete(
         &user_idx_store(),
         &format!("social:{provider}:{provider_sub}"),
     )

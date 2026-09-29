@@ -110,11 +110,13 @@ pub async fn authenticate_client(
         } else {
             &format!("/{expected_endpoint}")
         };
-        let valid_audiences = [
+        let mut valid_audiences = vec![
             issuer.to_string(),
             format!("{issuer}{expected_endpoint_clean}"),
-            format!("{issuer}/token"),
         ];
+        if expected_endpoint_clean == "/token" {
+            valid_audiences.push(format!("{issuer}/token"));
+        }
         let aud_ok = match payload.get("aud") {
             Some(serde_json::Value::String(s)) => valid_audiences.iter().any(|a| s == a),
             Some(serde_json::Value::Array(arr)) => arr.iter().any(|v| {
@@ -205,7 +207,6 @@ fn verify_secret(client: &OidcClient, client_secret: Option<&str>) -> Result<(),
                     .as_bytes()
                     .ct_eq(stored_hash.as_bytes())
                     .into()
-                    || provided.as_bytes().ct_eq(stored_hash.as_bytes()).into()
                 {
                     Ok(())
                 } else {

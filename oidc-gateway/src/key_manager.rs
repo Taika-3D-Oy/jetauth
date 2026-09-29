@@ -170,18 +170,18 @@ async fn generate_and_store_ec() -> Result<StoredEcKey, String> {
     };
 
     let stored_bytes = serde_json::to_vec(&stored).map_err(|e| format!("serialize EC key: {e}"))?;
-    match crate::store::kv_set_raw(&keys_table(), EC_KEY_NAME, &stored_bytes).await {
+    match crate::store::kv_create_raw(&keys_table(), EC_KEY_NAME, &stored_bytes, None).await {
         Ok(()) => {
             eprintln!("KEY-MANAGER: generated and stored new EC signing key kid={kid}");
             Ok(stored)
         }
-        Err(e) => {
-            eprintln!("KEY-MANAGER: EC key store returned {e}, trying to load existing EC key");
-            if let Ok(Some(existing)) = load_ec_from_db().await {
-                return Ok(existing);
-            }
-            Err(format!("store EC key: {e}"))
+        Err(e) if e.contains("already exists") => {
+            eprintln!("KEY-MANAGER: EC key race lost, loading existing EC key");
+            load_ec_from_db()
+                .await?
+                .ok_or_else(|| "EC key disappeared after race".to_string())
         }
+        Err(e) => Err(format!("store EC key: {e}")),
     }
 }
 

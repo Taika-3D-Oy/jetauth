@@ -36,6 +36,15 @@ pub async fn verify_token_scoped(
         return Err("token not yet active (nbf)".into());
     }
 
+    // Validate exp — required, with the same 30s leeway
+    let exp = claims
+        .get("exp")
+        .and_then(|v| v.as_u64())
+        .ok_or("token missing exp claim")?;
+    if now > exp + 30 {
+        return Err("token expired".into());
+    }
+
     // Revocation check
     if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
         let iat = claims.get("iat").and_then(|v| v.as_u64()).unwrap_or(0);

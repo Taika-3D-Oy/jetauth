@@ -133,7 +133,23 @@ fn clean_uri(u: &str) -> &str {
 fn uri_matches(proof_uri: &str, expected_uri: &str) -> bool {
     let p = clean_uri(proof_uri);
     let e = clean_uri(expected_uri);
-    p.eq_ignore_ascii_case(e)
+    // RFC 3986: only scheme and host are case-insensitive; path compares byte-exactly
+    let (p_authority, p_path) = split_authority_path(p);
+    let (e_authority, e_path) = split_authority_path(e);
+    p_authority.eq_ignore_ascii_case(e_authority) && p_path == e_path
+}
+
+fn split_authority_path(uri: &str) -> (&str, &str) {
+    match uri.find("://") {
+        Some(scheme_end) => {
+            let rest = &uri[scheme_end + 3..];
+            match rest.find('/') {
+                Some(path_start) => (&uri[..scheme_end + 3 + path_start], &rest[path_start..]),
+                None => (uri, ""),
+            }
+        }
+        None => ("", uri),
+    }
 }
 
 #[cfg(test)]

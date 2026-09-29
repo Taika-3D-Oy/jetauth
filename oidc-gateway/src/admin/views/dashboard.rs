@@ -5,6 +5,59 @@ use http::Response;
 use maud::{Markup, html};
 
 pub async fn render_dashboard(session: &AdminSession) -> Response<String> {
+    if !session.is_superadmin {
+        let content = html! {
+            div class="page-header" {
+                div class="page-header-text" {
+                    h1 class="page-title" { "Dashboard" }
+                    p class="page-subtitle" { "Tenant administration overview." }
+                }
+            }
+            div class="card" {
+                div class="card-header" {
+                    span class="card-title" { "Your Tenants" }
+                }
+                div class="table-wrap" {
+                    table {
+                        thead {
+                            tr {
+                                th { "Display Name" }
+                                th { "Tenant ID" }
+                                th { "Status" }
+                            }
+                        }
+                        tbody {
+                            @if session.tenants.is_empty() {
+                                tr {
+                                    td colspan="3" class="text-muted" style="text-align:center; padding: 24px;" {
+                                        "You are not a member of any tenant."
+                                    }
+                                }
+                            } @else {
+                                @for t in &session.tenants {
+                                    tr {
+                                        td {
+                                            @if crate::admin::views::can_manage_tenant(session, &t.id) {
+                                                a href={"/admin/tenants/" (t.id)} style="font-weight:600; text-decoration:none; color:inherit;" {
+                                                    (t.display_name)
+                                                }
+                                            } @else {
+                                                span style="font-weight:600;" { (t.display_name) }
+                                            }
+                                        }
+                                        td class="mono-sm" { (t.id) }
+                                        td { (t.status) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        return render_layout(session, "dashboard", "Dashboard", content);
+    }
+
     let tenants_count = session.tenants.len();
     let users_count = store::list_users().await.map(|u| u.len()).unwrap_or(0);
     let clients_count = store::list_clients().await.map(|c| c.len()).unwrap_or(0);

@@ -8,6 +8,9 @@ pub struct AdminSession {
     pub is_superadmin: bool,
     pub current_tenant: Option<Tenant>,
     pub tenants: Vec<Tenant>,
+    /// Tenants where the session user holds owner/admin (empty for superadmins,
+    /// who can manage every tenant — check `is_superadmin` first).
+    pub admin_tenant_ids: std::collections::HashSet<String>,
     pub csrf_token: String,
 }
 
@@ -79,35 +82,47 @@ pub fn render_layout(
                     div class="sidebar-divider" {}
                     div class="sidebar-section-label" { "Tenant" }
                     @if let Some(ref ct) = session.current_tenant {
-                        a href={"/admin/tenants/" (ct.id)} class={"sidebar-link" @if active_nav == "tenant_members" { " active" }} {
-                            "Members"
+                        @if session.is_superadmin || session.admin_tenant_ids.contains(&ct.id) {
+                            a href={"/admin/tenants/" (ct.id)} class={"sidebar-link" @if active_nav == "tenant_members" { " active" }} {
+                                "Members"
+                            }
+                        } @else {
+                            span class="sidebar-link text-muted" style="font-style:italic" { "Member access only" }
                         }
                     } @else {
                         span class="sidebar-link text-muted" style="font-style:italic" { "No tenant selected" }
                     }
 
-                    div class="sidebar-divider" {}
-                    div class="sidebar-section-label" { "Global" }
-                    a href="/admin/users" class={"sidebar-link" @if active_nav == "users" { " active" }} {
-                        "Users"
-                    }
-                    a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
-                        "Tenants"
-                    }
-                    a href="/admin/clients" class={"sidebar-link" @if active_nav == "clients" { " active" }} {
-                        "Clients"
-                    }
-                    a href="/admin/identity-providers" class={"sidebar-link" @if active_nav == "idps" { " active" }} {
-                        "Identity Providers"
-                    }
-                    a href="/admin/hooks" class={"sidebar-link" @if active_nav == "hooks" { " active" }} {
-                        "Hooks"
-                    }
-                    a href="/admin/settings" class={"sidebar-link" @if active_nav == "settings" { " active" }} {
-                        "Settings"
-                    }
-                    a href="/admin/audit" class={"sidebar-link" @if active_nav == "audit" { " active" }} {
-                        "Audit Log"
+                    @if session.is_superadmin {
+                        div class="sidebar-divider" {}
+                        div class="sidebar-section-label" { "Global" }
+                        a href="/admin/users" class={"sidebar-link" @if active_nav == "users" { " active" }} {
+                            "Users"
+                        }
+                        a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
+                            "Tenants"
+                        }
+                        a href="/admin/clients" class={"sidebar-link" @if active_nav == "clients" { " active" }} {
+                            "Clients"
+                        }
+                        a href="/admin/identity-providers" class={"sidebar-link" @if active_nav == "idps" { " active" }} {
+                            "Identity Providers"
+                        }
+                        a href="/admin/hooks" class={"sidebar-link" @if active_nav == "hooks" { " active" }} {
+                            "Hooks"
+                        }
+                        a href="/admin/settings" class={"sidebar-link" @if active_nav == "settings" { " active" }} {
+                            "Settings"
+                        }
+                        a href="/admin/audit" class={"sidebar-link" @if active_nav == "audit" { " active" }} {
+                            "Audit Log"
+                        }
+                    } @else {
+                        div class="sidebar-divider" {}
+                        div class="sidebar-section-label" { "Tenants" }
+                        a href="/admin/tenants" class={"sidebar-link" @if active_nav == "tenants" { " active" }} {
+                            "My Tenants"
+                        }
                     }
 
                     div class="sidebar-divider" {}

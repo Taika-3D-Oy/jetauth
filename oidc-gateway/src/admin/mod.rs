@@ -102,6 +102,28 @@ pub async fn handle_admin_route(
         clean_path
     };
 
+    // ── Authorization: cross-tenant global state is superadmin-only ──
+    const SUPERADMIN_PREFIXES: &[&str] = &[
+        "/admin/hooks",
+        "/admin/settings",
+        "/admin/clients",
+        "/admin/identity-providers",
+        "/admin/audit",
+    ];
+    let is_global_route = SUPERADMIN_PREFIXES
+        .iter()
+        .any(|pre| p == *pre || p.strip_prefix(pre).is_some_and(|r| r.starts_with('/')))
+        || p == "/admin/users"
+        || p == "/admin/users/search"
+        || p == "/admin/tenants/modal/new"
+        || (p == "/admin/tenants" && *method == Method::POST);
+    if is_global_route && !session.is_superadmin {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Access denied: superadmin privileges required.",
+        );
+    }
+
     match (method, p) {
         // ── Dashboard ──
         (&Method::GET, "/admin") => views::dashboard::render_dashboard(&session).await,
@@ -143,9 +165,10 @@ pub async fn handle_admin_route(
                 created_at: store::unix_now(),
             };
             if let Err(e) = store::create_tenant(&tenant).await {
+                crate::logger::error_message("admin.tenant_create_failed", &e);
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to save tenant: {e}"),
+                    "Failed to save the tenant.",
                 );
             }
             // Add creator as owner
@@ -265,9 +288,10 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_client(&client).await {
+                crate::logger::error_message("admin.client_create_failed", &e);
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to save client: {e}"),
+                    "Failed to save the client.",
                 );
             }
             if let Some(raw_secret) = raw_secret_opt {
@@ -349,9 +373,10 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_identity_provider(&idp).await {
+                crate::logger::error_message("admin.idp_create_failed", &e);
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to save IDP: {e}"),
+                    "Failed to save the identity provider.",
                 );
             }
             redirect_response("/admin/identity-providers")
@@ -399,9 +424,10 @@ pub async fn handle_admin_route(
             };
 
             if let Err(e) = store::save_hook(&hook).await {
+                crate::logger::error_message("admin.hook_create_failed", &e);
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to save hook: {e}"),
+                    "Failed to save the hook.",
                 );
             }
 
@@ -418,6 +444,14 @@ pub async fn handle_admin_route(
                 changed_at: now,
             };
             let _ = store::save_hook_version(&version_snapshot).await;
+
+            let _ = store::log_audit(
+                "hook_created",
+                &session.user.id,
+                &id,
+                &format!("name={} hash={} v=1", hook.name, hook.script_hash),
+            )
+            .await;
 
             redirect_response(&format!("/admin/hooks/{id}"))
         }
@@ -537,9 +571,25 @@ async fn handle_parameterized_route(
         if let Some((id, sub)) = rest.split_once('/') {
             // e.g. /admin/tenants/{id}/invite
             if sub == "invite" && method == Method::POST {
+                let caller_role = match require_tenant_admin(session, id).await {
+                    Ok(r) => r,
+                    Err(resp) => return resp,
+                };
                 let form = parse_form(body);
                 let email = form_value(&form, "email").unwrap_or("").trim();
-                let role = form_value(&form, "role").unwrap_or("member");
+                let role = form_value(&form, "role").unwrap_or("member").trim();
+                if !["owner", "admin", "member"].contains(&role) {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "Invalid role (must be owner, admin, or member).",
+                    );
+                }
+                if role_level(role) > role_level(&caller_role) {
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Access denied: cannot assign a role higher than your own.",
+                    );
+                }
                 if let Ok(Some(target_user)) = store::get_user_by_email(email).await {
                     let m = Membership {
                         tenant_id: id.to_string(),
@@ -548,6 +598,13 @@ async fn handle_parameterized_route(
                         joined_at: store::unix_now(),
                     };
                     let _ = store::add_membership(&m).await;
+                    let _ = store::log_audit(
+                        "user_added_to_tenant",
+                        &session.user.id,
+                        &target_user.id,
+                        &format!("tenant:{id} role:{role}"),
+                    )
+                    .await;
                 }
                 let memberships = store::list_tenant_members(id).await.unwrap_or_default();
                 let mut members = Vec::new();
@@ -564,7 +621,32 @@ async fn handle_parameterized_route(
             if let Some(user_id) = sub.strip_prefix("members/")
                 && method == Method::DELETE
             {
+                let caller_role = match require_tenant_admin(session, id).await {
+                    Ok(r) => r,
+                    Err(resp) => return resp,
+                };
+                if !session.is_superadmin && session.user.id != user_id {
+                    let target_role = store::get_membership(id, user_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|m| m.role)
+                        .unwrap_or_default();
+                    if role_level(&target_role) >= role_level(&caller_role) {
+                        return error_response(
+                            StatusCode::FORBIDDEN,
+                            "Access denied: cannot remove a member with an equal or higher role.",
+                        );
+                    }
+                }
                 let _ = store::remove_membership(id, user_id).await;
+                let _ = store::log_audit(
+                    "user_removed_from_tenant",
+                    &session.user.id,
+                    user_id,
+                    &format!("tenant:{id}"),
+                )
+                .await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .body(String::new())
@@ -574,6 +656,9 @@ async fn handle_parameterized_route(
             // /admin/tenants/{id}
             let id = rest;
             if method == Method::GET {
+                if let Err(resp) = require_tenant_admin(session, id).await {
+                    return resp;
+                }
                 if let Ok(Some(tenant)) = store::get_tenant(id).await {
                     let memberships = store::list_tenant_members(id).await.unwrap_or_default();
                     let mut members = Vec::new();
@@ -586,7 +671,11 @@ async fn handle_parameterized_route(
                         .await;
                 }
             } else if method == Method::DELETE {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 let _ = store::delete_tenant(id).await;
+                let _ = store::log_audit("tenant_deleted", &session.user.id, id, "").await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("HX-Redirect", "/admin/tenants")
@@ -606,6 +695,9 @@ async fn handle_parameterized_route(
                 let new_raw_secret = store::random_alphanumeric(32);
                 client.client_secret = Some(store::hmac_client_secret(&new_raw_secret));
                 let _ = store::save_client(&client).await;
+                let _ =
+                    store::log_audit("client_secret_rotated", &session.user.id, id, &client.name)
+                        .await;
                 return html_response(format!(
                     r#"<div class="alert alert-warning" style="margin-top: 12px; padding: 12px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: var(--radius);"><div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px; font-size: 13px;">⚠️ Copy New Secret (Shown Once)</div><div style="display: flex; align-items: center; gap: 8px;"><span class="mono copy-chip" onclick="copyToClipboard(this, this.innerText)" style="font-size: 13px; font-weight: 600;">{}</span><button class="btn btn-xs btn-primary" onclick="copyToClipboard(this, this.previousElementSibling.innerText)">Copy</button></div></div>"#,
                     new_raw_secret
@@ -785,7 +877,14 @@ async fn handle_parameterized_route(
                     return redirect_response(&format!("/admin/clients/{id}"));
                 }
             } else if method == Method::DELETE {
+                if id == "lid-admin" || id == "lid-default" {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "Cannot delete a built-in system client.",
+                    );
+                }
                 let _ = store::delete_client(id).await;
+                let _ = store::log_audit("client_deleted", &session.user.id, id, "").await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .body(String::new())
@@ -798,6 +897,9 @@ async fn handle_parameterized_route(
     if let Some(rest) = path.strip_prefix("/admin/users/") {
         if let Some((id, sub)) = rest.split_once('/') {
             if sub == "activate" && method == Method::POST {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(mut user)) = store::get_user(id).await {
                     user.status = "active".to_string();
                     let _ = store::update_user(&user).await;
@@ -823,6 +925,11 @@ async fn handle_parameterized_route(
                 }
             }
             if sub == "modal/add-tenant" && method == Method::GET {
+                // Global user management is superadmin-only; the modal would
+                // otherwise leak arbitrary users' name/email to tenant admins.
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(user)) = store::get_user(id).await {
                     let tenants = store::list_tenants().await.unwrap_or_default();
                     return html_response(
@@ -834,13 +941,30 @@ async fn handle_parameterized_route(
                 let form = parse_form(body);
                 let tenant_id = form_value(&form, "tenant_id").unwrap_or("").trim();
                 let role = form_value(&form, "role").unwrap_or("member").trim();
-                let valid_roles = ["owner", "admin", "manager", "member"];
-                let role = if valid_roles.contains(&role) { role } else { "member" };
 
                 if !tenant_id.is_empty() {
+                    let caller_role = match require_tenant_admin(session, tenant_id).await {
+                        Ok(r) => r,
+                        Err(resp) => return resp,
+                    };
+                    if !["owner", "admin", "member"].contains(&role) {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "Invalid role (must be owner, admin, or member).",
+                        );
+                    }
+                    if role_level(role) > role_level(&caller_role) {
+                        return error_response(
+                            StatusCode::FORBIDDEN,
+                            "Access denied: cannot assign a role higher than your own.",
+                        );
+                    }
                     if let Ok(Some(user)) = store::get_user(id).await {
-                        // Ensure tenant exists, or create it if custom ID specified
+                        // Only superadmins may implicitly create a tenant from a custom ID.
                         if let Ok(None) = store::get_tenant(tenant_id).await {
+                            if !session.is_superadmin {
+                                return error_response(StatusCode::NOT_FOUND, "Tenant not found.");
+                            }
                             let tenant = store::Tenant {
                                 id: tenant_id.to_string(),
                                 name: tenant_id.to_string(),
@@ -883,6 +1007,24 @@ async fn handle_parameterized_route(
             if let Some(tenant_id) = sub.strip_prefix("tenants/")
                 && method == Method::DELETE
             {
+                let caller_role = match require_tenant_admin(session, tenant_id).await {
+                    Ok(r) => r,
+                    Err(resp) => return resp,
+                };
+                if !session.is_superadmin && session.user.id != id {
+                    let target_role = store::get_membership(tenant_id, id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|m| m.role)
+                        .unwrap_or_default();
+                    if role_level(&target_role) >= role_level(&caller_role) {
+                        return error_response(
+                            StatusCode::FORBIDDEN,
+                            "Access denied: cannot remove a member with an equal or higher role.",
+                        );
+                    }
+                }
                 let _ = store::remove_membership(tenant_id, id).await;
                 let _ = store::log_audit(
                     "admin_remove_tenant_member",
@@ -905,6 +1047,9 @@ async fn handle_parameterized_route(
                 }
             }
             if sub == "password-reset" && method == Method::POST {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(user)) = store::get_user(id).await {
                     let reset_token = store::random_hex(32);
                     let inv = Invitation {
@@ -916,6 +1061,13 @@ async fn handle_parameterized_route(
                         expires_at: store::unix_now() + 3600,
                     };
                     let _ = store::save_invitation(&inv).await;
+                    let _ = store::log_audit(
+                        "password_reset_initiated",
+                        &session.user.id,
+                        &user.id,
+                        &user.email,
+                    )
+                    .await;
                     crate::email::send_password_reset_email(
                         &crate::get_issuer(),
                         &user.email,
@@ -927,21 +1079,32 @@ async fn handle_parameterized_route(
                 return redirect_response(&format!("/admin/users/{id}"));
             }
             if sub == "disable-mfa" && method == Method::POST {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(mut user)) = store::get_user(id).await {
                     user.totp_enabled = false;
                     user.totp_secret = None;
                     let _ = store::update_user(&user).await;
+                    let _ =
+                        store::log_audit("mfa_disabled", &session.user.id, &user.id, "admin_ui")
+                            .await;
                 }
                 return redirect_response(&format!("/admin/users/{id}"));
             }
             if let Some(cred_id) = sub.strip_prefix("passkeys/")
                 && method == Method::DELETE
             {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(mut user)) = store::get_user(id).await {
                     user.passkey_credentials
                         .retain(|p| p.credential_id != cred_id);
                     let _ = store::update_user(&user).await;
                     let _ = store::unindex_passkey_credential(cred_id).await;
+                    let _ =
+                        store::log_audit("passkey_deleted", &session.user.id, id, cred_id).await;
                 }
                 return Response::builder()
                     .status(StatusCode::OK)
@@ -951,12 +1114,25 @@ async fn handle_parameterized_route(
         } else {
             let id = rest;
             if method == Method::GET {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
                 if let Ok(Some(user)) = store::get_user(id).await {
                     let passkeys = user.passkey_credentials.clone();
                     return views::users::render_user_detail_page(session, &user, &passkeys).await;
                 }
             } else if method == Method::DELETE {
+                if let Err(resp) = require_superadmin(session) {
+                    return resp;
+                }
+                let target_email = store::get_user(id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|u| u.email)
+                    .unwrap_or_default();
                 let _ = store::delete_user(id).await;
+                let _ = store::log_audit("user_deleted", &session.user.id, id, &target_email).await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("HX-Redirect", "/admin/users")
@@ -973,9 +1149,10 @@ async fn handle_parameterized_route(
                 if let Ok(Some(mut idp)) = store::get_identity_provider(id).await {
                     idp.enabled = !idp.enabled;
                     if let Err(e) = store::save_identity_provider(&idp).await {
+                        crate::logger::error_message("admin.idp_toggle_failed", &e);
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to update IDP: {e}"),
+                            "Failed to update the identity provider.",
                         );
                     }
                     return html_response(views::idps::render_idp_row(&idp).into_string());
@@ -1011,9 +1188,10 @@ async fn handle_parameterized_route(
                     }
                     idp.enabled = enabled;
                     if let Err(e) = store::save_identity_provider(&idp).await {
+                        crate::logger::error_message("admin.idp_update_failed", &e);
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to update IDP: {e}"),
+                            "Failed to update the identity provider.",
                         );
                     }
                     return redirect_response("/admin/identity-providers");
@@ -1025,6 +1203,8 @@ async fn handle_parameterized_route(
             let id = rest;
             if method == Method::DELETE {
                 let _ = store::delete_identity_provider(id).await;
+                let _ =
+                    store::log_audit("identity_provider_deleted", &session.user.id, id, "").await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .body(String::new())
@@ -1110,10 +1290,30 @@ async fn handle_parameterized_route(
                     hook.updated_at = now;
 
                     let _ = store::save_hook(&hook).await;
+                    let _ = store::log_audit(
+                        "hook_updated",
+                        &session.user.id,
+                        id,
+                        &format!(
+                            "name={} hash={} v={}",
+                            hook.name, hook.script_hash, hook.version
+                        ),
+                    )
+                    .await;
                     return redirect_response(&format!("/admin/hooks/{id}"));
                 }
             } else if method == Method::DELETE {
+                let hook_meta = store::get_hook(id).await.ok().flatten();
                 let _ = store::delete_hook(id).await;
+                let _ = store::log_audit(
+                    "hook_deleted",
+                    &session.user.id,
+                    id,
+                    &hook_meta
+                        .map(|h| format!("name={} hash={} v={}", h.name, h.script_hash, h.version))
+                        .unwrap_or_default(),
+                )
+                .await;
                 return Response::builder()
                     .status(StatusCode::OK)
                     .body(String::new())
@@ -1139,6 +1339,69 @@ async fn handle_parameterized_route(
     }
 
     error_response(StatusCode::NOT_FOUND, "Admin route not found")
+}
+
+// ── Authorization Helpers ─────────────────────────────────────
+
+fn role_level(role: &str) -> u8 {
+    match role {
+        "owner" => 4,
+        "admin" => 3,
+        "manager" => 2,
+        "member" => 1,
+        _ => 0,
+    }
+}
+
+fn safe_return_to(raw: &str) -> &str {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.starts_with("/\\") {
+        raw
+    } else {
+        "/admin"
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn require_superadmin(session: &AdminSession) -> Result<(), Response<String>> {
+    if session.is_superadmin {
+        Ok(())
+    } else {
+        Err(error_response(
+            StatusCode::FORBIDDEN,
+            "Access denied: superadmin privileges required.",
+        ))
+    }
+}
+
+/// Role the session user effectively holds on the given tenant.
+/// Superadmins are treated as owners of every tenant.
+async fn session_tenant_role(session: &AdminSession, tenant_id: &str) -> String {
+    if session.is_superadmin {
+        return "owner".to_string();
+    }
+    store::get_membership(tenant_id, &session.user.id)
+        .await
+        .ok()
+        .flatten()
+        .map(|m| m.role)
+        .unwrap_or_default()
+}
+
+/// Require the session user to hold owner/admin on the TARGET tenant
+/// (or be superadmin). Returns the effective role on success.
+async fn require_tenant_admin(
+    session: &AdminSession,
+    tenant_id: &str,
+) -> Result<String, Response<String>> {
+    let role = session_tenant_role(session, tenant_id).await;
+    if role_level(&role) >= role_level("admin") {
+        Ok(role)
+    } else {
+        Err(error_response(
+            StatusCode::FORBIDDEN,
+            "Access denied: owner or admin role on this tenant required.",
+        ))
+    }
 }
 
 // ── Session Resolver & CSRF Protection ──────────────────────────
@@ -1200,7 +1463,7 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
         && let Ok(claims) = crate::service_client::verify_token_scoped(
             token,
             Some(&crate::get_issuer()),
-            None,
+            Some("lid-admin"),
             Some("access"),
         )
         .await
@@ -1299,11 +1562,22 @@ async fn resolve_admin_session(headers: &HeaderMap) -> Result<AdminSession, Resp
 
     let csrf_token = csrf_token_opt.unwrap_or_else(|| store::random_hex(24));
 
+    let admin_tenant_ids = if is_super {
+        std::collections::HashSet::new()
+    } else {
+        memberships
+            .iter()
+            .filter(|m| m.role == "owner" || m.role == "admin")
+            .map(|m| m.tenant_id.clone())
+            .collect()
+    };
+
     Ok(AdminSession {
         user,
         is_superadmin: is_super,
         current_tenant,
         tenants,
+        admin_tenant_ids,
         csrf_token,
     })
 }
@@ -1337,6 +1611,29 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
         ));
     }
 
+    // Rate limit bootstrap attempts per email.
+    match crate::service_client::check_rate(
+        &format!("admin_bootstrap:{}", email.to_lowercase()),
+        5,
+        3600,
+    )
+    .await
+    {
+        Ok((false, _)) => {
+            return views::bootstrap::render_bootstrap_page(Some(
+                "Too many attempts. Please try again later.",
+            ));
+        }
+        Err(e) => {
+            // Fail closed: when the limiter is unavailable, deny the attempt.
+            crate::logger::error_message("rate_limit.admin_bootstrap_check_failed", e);
+            return views::bootstrap::render_bootstrap_page(Some(
+                "Too many attempts. Please try again later.",
+            ));
+        }
+        _ => {}
+    }
+
     if password != confirm_password {
         return views::bootstrap::render_bootstrap_page(Some(
             "Passwords do not match. Please re-enter your password.",
@@ -1346,7 +1643,10 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
     let password_hash = match crate::service_client::hash_password(password).await {
         Ok(h) => h,
         Err(e) => {
-            return views::bootstrap::render_bootstrap_page(Some(&format!("Hashing error: {e}")));
+            crate::logger::error_message("admin.bootstrap_hash_failed", &e);
+            return views::bootstrap::render_bootstrap_page(Some(
+                "Bootstrap is temporarily unavailable. Please try again.",
+            ));
         }
     };
 
@@ -1388,8 +1688,30 @@ async fn handle_bootstrap_submit(body: &[u8]) -> Response<String> {
         let _ = crate::hooks::apply_outcome(&mut user, &boot).await;
     }
 
+    // Serialize concurrent bootstraps (incl. across regions): the first writer
+    // of this key wins; a conflict means bootstrap already completed elsewhere.
+    match store::kv_create_raw("sessions", "meta:bootstrap_done", b"1", None).await {
+        Ok(()) => {}
+        Err(e) if e.contains("already exists") => {
+            return Response::builder()
+                .status(StatusCode::SEE_OTHER)
+                .header("location", "/admin/login")
+                .body(String::new())
+                .unwrap();
+        }
+        Err(e) => {
+            crate::logger::error_message("admin.bootstrap_claim_failed", &e);
+            return views::bootstrap::render_bootstrap_page(Some(
+                "Bootstrap is temporarily unavailable. Please try again.",
+            ));
+        }
+    }
+
     if let Err(e) = store::create_user(&user).await {
-        return views::bootstrap::render_bootstrap_page(Some(&format!("Failed to save user: {e}")));
+        crate::logger::error_message("admin.bootstrap_create_user_failed", &e);
+        return views::bootstrap::render_bootstrap_page(Some(
+            "Failed to create the administrator account. Please contact the operator.",
+        ));
     }
 
     let _ = store::set_superadmin_flag(true).await;
@@ -1494,17 +1816,38 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
     let email = form_value(&form, "email").unwrap_or("").trim();
     let password = form_value(&form, "password").unwrap_or("");
     let return_to = form_value(&form, "return_to").unwrap_or("/admin");
-    let return_target = if return_to.is_empty() {
-        "/admin"
-    } else {
-        return_to
-    };
+    let return_target = safe_return_to(return_to);
 
     if email.is_empty() || password.is_empty() {
         return views::login::render_login_page(
             Some("Please enter both email and password."),
             return_target,
         );
+    }
+
+    // Rate limit admin login attempts per email.
+    match crate::service_client::check_rate(
+        &format!("admin_login:{}", email.to_lowercase()),
+        10,
+        60,
+    )
+    .await
+    {
+        Ok((false, _)) => {
+            return views::login::render_login_page(
+                Some("Too many login attempts. Please try again later."),
+                return_target,
+            );
+        }
+        Err(e) => {
+            // Fail closed: when the limiter is unavailable, deny the attempt.
+            crate::logger::error_message("rate_limit.admin_login_check_failed", e);
+            return views::login::render_login_page(
+                Some("Too many login attempts. Please try again later."),
+                return_target,
+            );
+        }
+        _ => {}
     }
 
     let user = match store::get_user_by_email(email).await {
@@ -1527,10 +1870,7 @@ async fn handle_admin_login(body: &[u8]) -> Response<String> {
             password,
             "$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         ).await;
-        return views::login::render_login_page(
-            Some("This account is not active. Please contact an administrator."),
-            return_target,
-        );
+        return views::login::render_login_page(Some("Invalid email or password."), return_target);
     }
 
     // Check account lockout
@@ -1616,11 +1956,7 @@ async fn handle_admin_login_mfa(body: &[u8]) -> Response<String> {
     let mfa_token = form_value(&form, "mfa_token").unwrap_or("");
     let code = form_value(&form, "code").unwrap_or("").trim();
     let return_to = form_value(&form, "return_to").unwrap_or("/admin");
-    let return_target = if return_to.is_empty() {
-        "/admin"
-    } else {
-        return_to
-    };
+    let return_target = safe_return_to(return_to);
 
     let pending = match store::get_mfa_pending(mfa_token).await {
         Ok(Some(p)) if store::unix_now() <= p.expires_at => p,
@@ -1738,10 +2074,8 @@ async fn handle_admin_passkey_register_options(session: &AdminSession) -> Respon
         Ok(Some(u)) => u,
         Ok(None) => return json_error_response(StatusCode::NOT_FOUND, "user not found"),
         Err(e) => {
-            return json_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("database error: {e}"),
-            );
+            crate::logger::error_message("admin.passkey_options_get_user_failed", &e);
+            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
 
@@ -1761,10 +2095,8 @@ async fn handle_admin_passkey_register_options(session: &AdminSession) -> Respon
         expires_at: store::unix_now() + 300, // 5 minutes
     };
     if let Err(e) = store::save_passkey_challenge(&token, &pc).await {
-        return json_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("failed to save challenge: {e}"),
-        );
+        crate::logger::error_message("admin.passkey_save_challenge_failed", &e);
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
     }
 
     let display_name = if user.name.is_empty() {
@@ -1822,10 +2154,8 @@ async fn handle_admin_passkey_register_complete(
             );
         }
         Err(e) => {
-            return json_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("database error: {e}"),
-            );
+            crate::logger::error_message("admin.passkey_get_challenge_failed", &e);
+            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
 
@@ -1861,10 +2191,8 @@ async fn handle_admin_passkey_register_complete(
         Ok(Some(u)) => u,
         Ok(None) => return json_error_response(StatusCode::NOT_FOUND, "user not found"),
         Err(e) => {
-            return json_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("database error: {e}"),
-            );
+            crate::logger::error_message("admin.passkey_complete_get_user_failed", &e);
+            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
 
@@ -1899,17 +2227,13 @@ async fn handle_admin_passkey_register_complete(
     })
     .await
     {
-        return json_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("failed to update user: {e}"),
-        );
+        crate::logger::error_message("admin.passkey_update_user_failed", &e);
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
     }
 
     if let Err(e) = store::index_passkey_credential(&credential_id, user_id).await {
-        return json_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("failed to index credential: {e}"),
-        );
+        crate::logger::error_message("admin.passkey_index_failed", &e);
+        return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
     }
 
     let _ = store::log_audit("passkey_registered", user_id, user_id, &name).await;
@@ -2002,6 +2326,7 @@ mod tests {
             is_superadmin: true,
             current_tenant: None,
             tenants: vec![],
+            admin_tenant_ids: Default::default(),
             csrf_token: "csrf-token-12345".to_string(),
         };
 
@@ -2030,6 +2355,7 @@ mod tests {
             is_superadmin: true,
             current_tenant: None,
             tenants: vec![],
+            admin_tenant_ids: Default::default(),
             csrf_token: "valid-csrf-token-secret".to_string(),
         };
 
@@ -2056,6 +2382,7 @@ mod tests {
             is_superadmin: true,
             current_tenant: None,
             tenants: vec![],
+            admin_tenant_ids: Default::default(),
             csrf_token: "valid-csrf-token-secret".to_string(),
         };
 
@@ -2083,6 +2410,7 @@ mod tests {
             is_superadmin: true,
             current_tenant: None,
             tenants: vec![],
+            admin_tenant_ids: Default::default(),
             csrf_token: "valid-csrf-token-secret".to_string(),
         };
 
@@ -2145,6 +2473,7 @@ mod tests {
                 is_superadmin: true,
                 current_tenant: None,
                 tenants: vec![],
+                admin_tenant_ids: Default::default(),
                 csrf_token: "csrf-token-12345".to_string(),
             };
 
@@ -2184,6 +2513,7 @@ mod tests {
             is_superadmin: true,
             current_tenant: None,
             tenants: vec![],
+            admin_tenant_ids: Default::default(),
             csrf_token: "valid-csrf-token".to_string(),
         };
 
@@ -2194,6 +2524,16 @@ mod tests {
         let mut wrong_headers = HeaderMap::new();
         wrong_headers.insert("x-csrf-token", "wrong-token".parse().unwrap());
         assert!(verify_admin_csrf(&wrong_headers, b"{}", &session).is_err());
+    }
+
+    #[test]
+    fn test_safe_return_to() {
+        assert_eq!(safe_return_to("/admin/users"), "/admin/users");
+        assert_eq!(safe_return_to("/admin"), "/admin");
+        assert_eq!(safe_return_to(""), "/admin");
+        assert_eq!(safe_return_to("https://evil.com"), "/admin");
+        assert_eq!(safe_return_to("//evil.com"), "/admin");
+        assert_eq!(safe_return_to("/\\evil.com"), "/admin");
     }
 
     #[test]

@@ -65,8 +65,8 @@ pub async fn check_rate(key: &str, limit: u64, window_secs: u64) -> Result<(bool
         }
     }
 
-    // Fail-open: allow but don't increment
-    Ok((true, 0))
+    // Fail closed: surface an error so authentication-critical callers can deny.
+    Err("rate limit CAS retries exhausted".into())
 }
 
 #[allow(dead_code)]

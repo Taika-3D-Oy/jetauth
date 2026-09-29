@@ -288,12 +288,16 @@ fn page_with_error(error: &str) -> Response<String> {
 /// Uses only unambiguous characters (no 0/O, 1/I/L).
 fn generate_user_code() -> String {
     const CHARS: &[u8] = b"ACDEFGHJKMNPQRTVWXY2345679";
-    let mut code = [0u8; 8];
-    getrandom::getrandom(&mut code).expect("random");
-    let chars: Vec<char> = code
-        .iter()
-        .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)
-        .collect();
+    let limit = 256 - (256 % CHARS.len()); // reject >= limit to avoid modulo bias
+    let mut chars = Vec::with_capacity(8);
+    let mut buf = [0u8; 1];
+    while chars.len() < 8 {
+        getrandom::getrandom(&mut buf).expect("random");
+        let b = buf[0] as usize;
+        if b < limit {
+            chars.push(CHARS[b % CHARS.len()] as char);
+        }
+    }
     format!(
         "{}-{}",
         chars[..4].iter().collect::<String>(),

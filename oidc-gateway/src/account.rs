@@ -84,12 +84,39 @@ fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let header = headers.get("cookie")?.to_str().ok()?;
     for part in header.split(';') {
         let part = part.trim();
-        if let Some(value) = part.strip_prefix(name) {
-            let value = value.strip_prefix('=')?;
+        if let Some((key, value)) = part.split_once('=')
+            && key.trim() == name
+        {
             return Some(value.to_string());
         }
     }
     None
+}
+
+// ── Auth-flow browser binding (login CSRF protection) ───────
+
+const FLOW_COOKIE_NAME: &str = "lid_flow";
+const FLOW_COOKIE_TTL: u64 = 600; // matches auth session lifetime
+
+/// Set-Cookie value binding the browser to an auth-flow identifier
+/// (session_id or authorization code) via a peppered HMAC digest.
+pub fn create_flow_cookie(bound_value: &str) -> String {
+    let digest = store::hmac_client_secret(bound_value);
+    let secure = if crate::is_dev_mode() { "" } else { " Secure;" };
+    format!(
+        "{FLOW_COOKIE_NAME}={digest}; HttpOnly;{secure} SameSite=Lax; Path=/; Max-Age={FLOW_COOKIE_TTL}"
+    )
+}
+
+/// Constant-time check that the request carries the flow cookie bound to
+/// `bound_value`. Fails closed when the cookie is missing.
+pub fn flow_cookie_matches(headers: &HeaderMap, bound_value: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    let Some(actual) = parse_cookie(headers, FLOW_COOKIE_NAME) else {
+        return false;
+    };
+    let expected = store::hmac_client_secret(bound_value);
+    actual.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 fn redirect_to_login(msg: &str) -> Response<String> {

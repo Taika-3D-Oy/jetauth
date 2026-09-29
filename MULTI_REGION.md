@@ -1,5 +1,7 @@
 # Multi-Region Architecture
 
+> **⚠️ DEV/INTEGRATION-TEST SETUP — NOT FOR PRODUCTION.** The multi-region topology and manifests described here (see `deploy/`) are for integration testing and deployment simulation only: no auth/TLS on NATS, dev secrets, and `dev_mode` flags. See SECURITY.md for production hardening.
+
 ## Overview
 
 Lattice-ID runs in two (or more) regions. Each region has its own wasmCloud

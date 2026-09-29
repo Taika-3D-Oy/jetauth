@@ -322,6 +322,11 @@ pub async fn apply_outcome(user: &mut User, outcome: &HookOutcome) -> Result<(),
             Ok(true)
         })
         .await?;
+        // Keep the cached has_superadmin flag in sync at promotion time so
+        // bootstrap gating does not depend on a later user scan.
+        if outcome.set_superadmin == Some(true) {
+            let _ = store::set_superadmin_flag(true).await;
+        }
         // Re-read the updated user so the caller has the latest state
         if let Some(updated) = store::get_user(&user.id).await? {
             *user = updated;

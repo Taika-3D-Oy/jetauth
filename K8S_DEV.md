@@ -1,5 +1,7 @@
 # Kubernetes Development Guide
 
+> **⚠️ DEV/INTEGRATION-TEST SETUP — NOT FOR PRODUCTION.** Everything in this guide (Kind clusters, `deploy/` manifests, NATS configs) is for local development and integration testing only: no auth/TLS on NATS, dev secrets, and `dev_mode` flags. See SECURITY.md for production hardening.
+
 Learnings, setup steps, and workflow recommendations from bringing Lattice-ID up on a local Kind cluster with the wasmCloud v2 operator.
 
 ## Learnings

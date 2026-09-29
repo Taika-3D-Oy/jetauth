@@ -1784,6 +1784,7 @@ pub async fn passkey_auth_options() -> Result<Response<String>, String> {
 pub async fn passkey_auth_complete(
     body: &[u8],
     remote_ip: &str,
+    headers: &http::HeaderMap,
 ) -> Result<Response<String>, String> {
     #[derive(serde::Deserialize)]
     struct Req {
@@ -1803,6 +1804,18 @@ pub async fn passkey_auth_complete(
         crate::service_client::check_rate(&format!("passkey_auth:{}", req.token), 10, 60).await
     {
         return Err("too many passkey auth attempts".into());
+    }
+
+    // Browser binding (login CSRF): the lid_flow cookie set at /authorize must
+    // match this session. Device-flow sessions are created by /device and exempt.
+    let session = store::get_auth_session(&req.session_id)
+        .await?
+        .ok_or("invalid or expired session")?;
+    if session.code_challenge_method != "device"
+        && !crate::account::flow_cookie_matches(headers, &req.session_id)
+    {
+        let _ = store::log_audit("passkey_flow_cookie_mismatch", "", "", remote_ip).await;
+        return Err("sign-in session could not be verified".into());
     }
 
     // Atomically consume challenge — prevents replay across replicas
@@ -1900,11 +1913,10 @@ pub async fn passkey_auth_complete(
     )
     .await;
 
-    let session = store::get_auth_session(&req.session_id)
-        .await?
-        .ok_or("invalid or expired session")?;
-
-    let amr = vec!["passkey".to_string()];
+    // UV is mandatory for passkey assertions (verify_assertion rejects
+    // assertions without the UV flag), so the assertion itself is the second
+    // factor: passkey (possession) + user verification → include "mfa".
+    let amr = vec!["passkey".to_string(), "mfa".to_string()];
     let code = store::random_hex(32);
     let auth_time = store::unix_now();
     let auth_code = store::AuthCode {

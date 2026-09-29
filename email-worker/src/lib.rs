@@ -34,7 +34,9 @@ impl exports::lattice_id::notify::email::Guest for Component {
     ) -> Result<(), String> {
         eprintln!(
             "email-worker: received event={} to={} url={}",
-            event_type, to, action_url
+            event_type,
+            to,
+            redact_url(&action_url)
         );
 
         let metadata_val: serde_json::Value = serde_json::from_str(&metadata)
@@ -60,10 +62,23 @@ impl exports::lattice_id::notify::email::Guest for Component {
 
 // ── Log provider (default / dev) ────────────────────────────────────────
 
+/// Strip the query string (carries reset/verification tokens) before logging.
+fn redact_url(url: &str) -> String {
+    let base = url.split('?').next().unwrap_or(url);
+    if base.len() == url.len() {
+        base.to_string()
+    } else {
+        format!("{base}?[redacted]")
+    }
+}
+
 fn deliver_log(event: &EmailEvent) -> Result<(), String> {
     eprintln!(
         "email-worker [LOG]: type={} to={} name={} url={}",
-        event.event_type, event.to, event.name, event.action_url
+        event.event_type,
+        event.to,
+        event.name,
+        redact_url(&event.action_url)
     );
     Ok(())
 }
@@ -274,6 +289,10 @@ mod ses {
         }
 
         let opts = RequestOptions::new();
+        // Conservative outbound timeouts (durations are nanoseconds).
+        let _ = opts.set_connect_timeout(Some(5_000_000_000));
+        let _ = opts.set_first_byte_timeout(Some(10_000_000_000));
+        let _ = opts.set_between_bytes_timeout(Some(10_000_000_000));
         let fut = outgoing_handler::handle(outgoing, Some(opts))
             .map_err(|e| format!("outgoing_handler: {e:?}"))?;
         let pollable = fut.subscribe();

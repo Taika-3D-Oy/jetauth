@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.4] - 2026-09-29
+
+### Security Hardening (Full Codebase Audit)
+
+This release remediates the findings of a comprehensive security audit of the OIDC gateway, covering the protocol core, cryptography, authentication flows, admin UI, and infrastructure.
+
+- **Critical**:
+  - Token expiry (`exp`) is now enforced in the central JWT validation path (`verify_token_scoped`); expired tokens are rejected at `/userinfo`, introspection, the management API, and admin Bearer auth. Missing `exp` is rejected.
+  - Admin UI now has a real authorization layer: global routes (hooks, settings, clients, identity providers, audit, global users) require superadmin; tenant-scoped routes verify the session user's role on the *target* tenant with role-hierarchy rules; built-in `lid-admin`/`lid-default` clients are protected; destructive actions are audit-logged. Closes a privilege-escalation path where any tenant admin could become superadmin via a Rhai `post-login` hook.
+  - Bootstrap is serialized with an atomic KV claim (`meta:bootstrap_done`), closing a race that could create multiple superadmins; the superadmin flag is set at promotion time; bootstrap and admin login endpoints are rate-limited and fail closed.
+- **High**:
+  - Fixed reflected XSS on the login/MFA pages: `session_id`, `login_hint`-derived email, and MFA tokens are HTML/JS/URL-escaped, and malformed session IDs render a generic error.
+  - Fixed first-party `redirect_uri` validation: control characters are rejected (closes a `Location`-header tab-injection open redirect enabling authorization-code theft), and relative URIs must canonicalize to a registered `issuer + path` entry.
+  - Login CSRF protection: new `lid_flow` cookie (peppered HMAC, HttpOnly, SameSite=Lax) binds authorize/login/MFA/consent/social/passkey flows to the initiating browser. The device-flow exemption sentinel can no longer be minted by clients (`code_challenge_method` other than `S256` is rejected unconditionally at `/authorize`).
+  - Registration hooks that `deny()` now actually prevent the account: the committed user record (and social identity link) is deleted on deny, in local, Google, and generic social flows.
+  - Secrets no longer reach logs: request paths are logged without query strings, reset/verification tokens are logged as HMACs, and the email-worker redacts token URLs.
+- **Medium / Low**:
+  - Removed the pass-the-hash fallback in client-secret verification (stored HMAC is no longer accepted as the secret).
+  - JTI replay protection (DPoP, `private_key_jwt`) is now atomic (create-if-absent).
+  - DPoP key binding is enforced across refresh-token rotation (RFC 9449 §6); refresh entries store the JWK thumbprint.
+  - Suspended users are rejected at authorization-code exchange and refresh (token family revoked); introspection accepts `access` and `client_credentials` token types only.
+  - `private_key_jwt` assertion audience is scoped to the actual endpoint.
+  - ES256 signature verification no longer accepts DER encoding; EC signing-key creation is atomic.
+  - Authentication-critical rate limits (login, MFA, registration, password reset) and TOTP replay protection now fail closed.
+  - Account lockout is only revealed after a correct password (closes an enumeration/lockout-confirmation oracle).
+  - Passkeys now require user verification (`userVerification: "required"`, UV flag enforced) and issue `amr = ["passkey", "mfa"]`; passkey login is bound to the `lid_flow` cookie.
+  - Outbound HTTP calls (backchannel logout, social IdP, email worker) now have connect/first-byte timeouts.
+  - `X-Forwarded-For` handling now trusts the last entry (nearest proxy) instead of the client-controlled first entry. **Ops note:** deployments without a trusted proxy should set/spoof-check XFF at their ingress.
+  - CORS: credentialed origin echo is no longer applied to `/admin/*` and `/account/*`; `Vary: Origin` added.
+  - Token-endpoint client-auth errors are now generic (`invalid_client`), closing a client-id enumeration oracle.
+  - Fixed recovery-code double-consumption race, device user-code modulo bias, cookie name prefix-matching bug, and non-atomic refresh replay marker.
+- **Deployment docs**: all `deploy/` manifests and `nats-data.conf` now carry prominent "DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION" headers (no manifest behavior changed).
+- **Tests**: 171 unit tests pass (new regression tests for the redirect/device-sentinel rejection and introspection token types); zero clippy warnings; `cargo fmt` clean.
+
+## [2.0.0-rc.3] - 2026-09-29
+
+### Fixed
+
+- Tenant claims are now correctly emitted in tokens for superadmin users.
+
 ## [2.0.0-rc.2] - 2026-09-29
 
 ### Rebranding & Major Architecture Upgrade

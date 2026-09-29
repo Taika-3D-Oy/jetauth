@@ -256,13 +256,24 @@ async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>,
         .unwrap_or("/")
         .to_string();
     let req_path = full_path.split('?').next().unwrap_or("/").to_string();
-    let trace_id = logger::begin_request(req.headers(), req.method(), &full_path, &remote_ip);
+    // Log only the route path — the query string can carry tokens/secrets.
+    let trace_id = logger::begin_request(req.headers(), req.method(), &req_path, &remote_ip);
 
     let resp = match handle(req, &remote_ip).await {
         Ok(resp) => resp,
         Err(e) => {
             logger::warn("http.request.rejected", serde_json::json!({ "error": e }));
-            error_json(StatusCode::BAD_REQUEST, &e)
+            // Don't leak client existence: client-auth failures get a generic
+            // invalid_client message; details stay in the server-side log above.
+            let msg = if e.contains("unknown client_id")
+                || e.contains("invalid client_secret")
+                || e.contains("client authentication")
+            {
+                "invalid_client".to_string()
+            } else {
+                e
+            };
+            error_json(StatusCode::BAD_REQUEST, &msg)
         }
     };
     logger::finish_request(resp.status().as_u16());
@@ -327,7 +338,7 @@ async fn handle_email_verification(query: &str) -> Result<Response<String>, Stri
         _ => {
             logger::warn(
                 "email_verification.invalid_token",
-                serde_json::json!({ "token": token }),
+                serde_json::json!({ "token_hmac": store::hmac_email(token) }),
             );
             return Err("Verification link is invalid or has expired.".into());
         }
@@ -452,6 +463,11 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         (&Method::GET, "/login") => {
             let params = util::parse_query(query);
             if let Some((_, session_id)) = params.iter().find(|(k, _)| k == "session_id") {
+                if !login::is_valid_session_id(session_id) {
+                    return Ok(login::generic_error_page(
+                        "Invalid sign-in session. Please start over.",
+                    ));
+                }
                 Ok(login::login_page(session_id, None).await)
             } else {
                 let return_to_raw = params
@@ -471,7 +487,7 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
                     .status(StatusCode::SEE_OTHER)
                     .header(
                         "location",
-                        format!("/authorize?client_id=lid-admin&redirect_uri={return_to}&response_type=code&scope=openid+email+profile&state=direct_login"),
+                        format!("/authorize?client_id=lid-admin&redirect_uri={}&response_type=code&scope=openid+email+profile&state=direct_login", util::percent_encode(return_to)),
                     )
                     .body(String::new())
                     .unwrap())
@@ -480,18 +496,18 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
 
         (&Method::POST, "/login") => {
             let body_bytes = read_body(body).await?;
-            login::handle_login(&body_bytes, remote_ip).await
+            login::handle_login(&body_bytes, remote_ip, &parts.headers).await
         }
 
         (&Method::POST, "/login/mfa") => {
             let body_bytes = read_body(body).await?;
-            login::handle_mfa(&body_bytes, remote_ip).await
+            login::handle_mfa(&body_bytes, remote_ip, &parts.headers).await
         }
 
         // ── Consent screen (third-party clients / prompt=consent) ────
         (&Method::POST, "/consent") => {
             let body_bytes = read_body(body).await?;
-            login::handle_consent(&body_bytes).await
+            login::handle_consent(&body_bytes, &parts.headers).await
         }
 
         (&Method::POST, "/token") => {
@@ -537,7 +553,7 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         // ── Social login ────────────────────────────────────
         (&Method::GET, "/auth/google") => google::start(query, &issuer).await,
         (&Method::GET, "/auth/google/callback") => {
-            google::callback(query, &issuer, remote_ip).await
+            google::callback(query, &issuer, remote_ip, &parts.headers).await
         }
 
         // ── Generic OIDC federation (/auth/social/{provider_id}) ────
@@ -545,7 +561,14 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
             social::start(&p[13..], query, &issuer).await
         }
         (&Method::GET, p) if p.starts_with("/auth/social/") && p.ends_with("/callback") => {
-            social::callback(&p[13..p.len() - 9], query, &issuer, remote_ip).await
+            social::callback(
+                &p[13..p.len() - 9],
+                query,
+                &issuer,
+                remote_ip,
+                &parts.headers,
+            )
+            .await
         }
 
         // ── Device Authorization Grant (RFC 8628) ───────────
@@ -564,7 +587,7 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         (&Method::POST, "/passkeys/auth-options") => management::passkey_auth_options().await,
         (&Method::POST, "/passkeys/auth-complete") => {
             let body_bytes = read_body(body).await?;
-            management::passkey_auth_complete(&body_bytes, remote_ip).await
+            management::passkey_auth_complete(&body_bytes, remote_ip, &parts.headers).await
         }
 
         // ── Account self-service (cookie-based auth) ────────
@@ -945,7 +968,11 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
         Ok((false, _)) => {
             return Err("too many registration attempts. please try again later.".into());
         }
-        Err(e) => logger::error_message("rate_limit.register_email_check_failed", e),
+        Err(e) => {
+            // Fail closed on limiter errors for authentication-critical paths.
+            logger::error_message("rate_limit.register_email_check_failed", e);
+            return Err("too many registration attempts. please try again later.".into());
+        }
         _ => {}
     }
     if remote_ip != "unknown" {
@@ -955,7 +982,10 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
             Ok((false, _)) => {
                 return Err("too many registration attempts. please try again later.".into());
             }
-            Err(e) => logger::error_message("rate_limit.register_ip_check_failed", e),
+            Err(e) => {
+                logger::error_message("rate_limit.register_ip_check_failed", e);
+                return Err("too many registration attempts. please try again later.".into());
+            }
             _ => {}
         }
     }
@@ -1022,6 +1052,8 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
                     reason,
                 )
                 .await;
+                // A deny must not leave the committed user record behind.
+                let _ = store::delete_user(&user.id).await;
                 return Err(format!("registration denied: {reason}"));
             }
             if let Err(e) = hooks::apply_outcome(&mut user_mut, &boot).await {
@@ -1049,6 +1081,8 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
                     reason,
                 )
                 .await;
+                // A deny must not leave the committed user record behind.
+                let _ = store::delete_user(&user.id).await;
                 return Err(format!("registration denied: {reason}"));
             }
             if let Err(e) = hooks::apply_outcome(&mut user_mut, &outcome).await {
@@ -1119,7 +1153,11 @@ async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<St
     match crate::service_client::check_rate(&format!("reset_complete:{}", req.token), 5, 900).await
     {
         Ok((false, _)) => return Err("too many reset attempts. please try again later.".into()),
-        Err(e) => logger::error_message("rate_limit.password_reset_check_failed", e),
+        Err(e) => {
+            // Fail closed on limiter errors for authentication-critical paths.
+            logger::error_message("rate_limit.password_reset_check_failed", e);
+            return Err("too many reset attempts. please try again later.".into());
+        }
         _ => {}
     }
 
@@ -1145,7 +1183,7 @@ async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<St
             // but log the failure.
             logger::warn(
                 "password_reset.invalid_token",
-                serde_json::json!({ "token": req.token }),
+                serde_json::json!({ "token_hmac": store::hmac_email(&req.token) }),
             );
             return Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -1517,8 +1555,9 @@ async fn allowed_origin(req_origin: Option<&str>) -> Option<String> {
 ///
 /// Public-info endpoints (discovery, JWKS, version) get a permissive `*`
 /// origin and skip credentials so they can be fetched from any browser context.
-/// All other endpoints echo the origin only if it matches a registered
-/// client redirect URI, and include `allow-credentials: true`.
+/// Admin and cookie-authenticated account paths never get a credentialed
+/// origin echo. Other endpoints echo the origin only if it matches a
+/// registered client redirect URI, and include `allow-credentials: true`.
 async fn with_cors_and_security(
     resp: Response<String>,
     req_origin: Option<&str>,
@@ -1535,18 +1574,26 @@ async fn with_cors_and_security(
             | "/health"
             | "/healthz"
     );
+    let no_credential_path = path == "/admin"
+        || path.starts_with("/admin/")
+        || path == "/account"
+        || path.starts_with("/account/");
 
     if public_path {
         parts
             .headers
             .insert("access-control-allow-origin", "*".parse().unwrap());
-    } else if let Some(origin_value) = allowed_origin(req_origin).await {
-        parts
-            .headers
-            .insert("access-control-allow-origin", origin_value.parse().unwrap());
-        parts
-            .headers
-            .insert("access-control-allow-credentials", "true".parse().unwrap());
+    } else {
+        // The response varies on the Origin header whether or not it is echoed.
+        parts.headers.insert("vary", "Origin".parse().unwrap());
+        if !no_credential_path && let Some(origin_value) = allowed_origin(req_origin).await {
+            parts
+                .headers
+                .insert("access-control-allow-origin", origin_value.parse().unwrap());
+            parts
+                .headers
+                .insert("access-control-allow-credentials", "true".parse().unwrap());
+        }
     }
     parts.headers.insert(
         "access-control-allow-methods",

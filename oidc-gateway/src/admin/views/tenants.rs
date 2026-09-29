@@ -1,11 +1,18 @@
 use crate::admin::layout::{AdminSession, render_layout};
-use crate::admin::views::{format_timestamp, relative_time, render_status_badge};
+use crate::admin::views::{
+    can_manage_tenant, format_timestamp, relative_time, render_status_badge,
+};
 use crate::store::{self, Membership, Tenant, User};
 use http::Response;
 use maud::{Markup, html};
 
 pub async fn render_tenants_page(session: &AdminSession) -> Response<String> {
-    let tenants = store::list_tenants().await.unwrap_or_default();
+    // Non-superadmins only see tenants they belong to.
+    let tenants = if session.is_superadmin {
+        store::list_tenants().await.unwrap_or_default()
+    } else {
+        session.tenants.clone()
+    };
 
     let content = html! {
         div class="page-header" {
@@ -13,24 +20,26 @@ pub async fn render_tenants_page(session: &AdminSession) -> Response<String> {
                 h1 class="page-title" { "Tenants" }
                 p class="page-subtitle" { "Manage multi-tenant organizations and workspaces." }
             }
-            div class="page-actions" {
-                button class="btn btn-primary"
-                       hx-get="/admin/tenants/modal/new"
-                       hx-target="#modal-container" {
-                    "+ Create Tenant"
+            @if session.is_superadmin {
+                div class="page-actions" {
+                    button class="btn btn-primary"
+                           hx-get="/admin/tenants/modal/new"
+                           hx-target="#modal-container" {
+                        "+ Create Tenant"
+                    }
                 }
             }
         }
 
         div class="card" {
-            (render_tenants_table(&tenants))
+            (render_tenants_table(&tenants, session))
         }
     };
 
     render_layout(session, "tenants", "Tenants", content)
 }
 
-pub fn render_tenants_table(tenants: &[Tenant]) -> Markup {
+pub fn render_tenants_table(tenants: &[Tenant], session: &AdminSession) -> Markup {
     html! {
         div class="table-wrap" {
             table {
@@ -53,10 +62,15 @@ pub fn render_tenants_table(tenants: &[Tenant]) -> Markup {
                         }
                     } @else {
                         @for t in tenants {
+                            @let can_manage = can_manage_tenant(session, &t.id);
                             tr id={"tenant-row-" (t.id)} {
                                 td {
-                                    a href={"/admin/tenants/" (t.id)} style="font-weight:600; text-decoration:none; color:inherit;" {
-                                        (t.display_name)
+                                    @if can_manage {
+                                        a href={"/admin/tenants/" (t.id)} style="font-weight:600; text-decoration:none; color:inherit;" {
+                                            (t.display_name)
+                                        }
+                                    } @else {
+                                        span style="font-weight:600;" { (t.display_name) }
                                     }
                                 }
                                 td class="mono" { (t.name) }
@@ -64,13 +78,17 @@ pub fn render_tenants_table(tenants: &[Tenant]) -> Markup {
                                 td { (render_status_badge(&t.status)) }
                                 td class="mono-sm" { (relative_time(t.created_at)) }
                                 td class="actions" {
-                                    a href={"/admin/tenants/" (t.id)} class="btn btn-xs" { "Manage →" }
-                                    button class="btn btn-xs btn-danger"
-                                           hx-delete={"/admin/tenants/" (t.id)}
-                                           hx-confirm={"Are you sure you want to delete tenant '" (t.display_name) "'?"}
-                                           hx-target={"#tenant-row-" (t.id)}
-                                           hx-swap="outerHTML" {
-                                        "Delete"
+                                    @if can_manage {
+                                        a href={"/admin/tenants/" (t.id)} class="btn btn-xs" { "Manage →" }
+                                    }
+                                    @if session.is_superadmin {
+                                        button class="btn btn-xs btn-danger"
+                                               hx-delete={"/admin/tenants/" (t.id)}
+                                               hx-confirm={"Are you sure you want to delete tenant '" (t.display_name) "'?"}
+                                               hx-target={"#tenant-row-" (t.id)}
+                                               hx-swap="outerHTML" {
+                                            "Delete"
+                                        }
                                     }
                                 }
                             }
@@ -151,7 +169,6 @@ pub async fn render_tenant_detail_page(
                     label for="invite-role" { "Role" }
                     select id="invite-role" name="role" {
                         option value="member" { "Member" }
-                        option value="manager" { "Manager" }
                         option value="admin" { "Admin" }
                         option value="owner" { "Owner" }
                     }
@@ -161,18 +178,20 @@ pub async fn render_tenant_detail_page(
         }
 
         // ── Danger Zone ──
-        div class="danger-zone" {
-            div class="danger-zone-title" { "Danger Zone" }
-            div class="danger-zone-row" {
-                div class="danger-zone-desc" {
-                    h4 { "Delete this tenant" }
-                    p { "Permanently remove this organization, all client bindings, and member associations." }
-                }
-                button class="btn btn-danger"
-                       hx-delete={"/admin/tenants/" (tenant.id)}
-                       hx-confirm={"Permanently delete tenant '" (tenant.display_name) "'?"}
-                       hx-target="body" {
-                    "Delete Tenant"
+        @if session.is_superadmin {
+            div class="danger-zone" {
+                div class="danger-zone-title" { "Danger Zone" }
+                div class="danger-zone-row" {
+                    div class="danger-zone-desc" {
+                        h4 { "Delete this tenant" }
+                        p { "Permanently remove this organization, all client bindings, and member associations." }
+                    }
+                    button class="btn btn-danger"
+                           hx-delete={"/admin/tenants/" (tenant.id)}
+                           hx-confirm={"Permanently delete tenant '" (tenant.display_name) "'?"}
+                           hx-target="body" {
+                        "Delete Tenant"
+                    }
                 }
             }
         }

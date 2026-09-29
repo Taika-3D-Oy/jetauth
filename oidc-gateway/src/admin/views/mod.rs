@@ -12,6 +12,11 @@ pub mod users;
 
 use maud::{Markup, html};
 
+/// Whether the session user may manage (owner/admin) the given tenant.
+pub fn can_manage_tenant(session: &crate::admin::layout::AdminSession, tenant_id: &str) -> bool {
+    session.is_superadmin || session.admin_tenant_ids.contains(tenant_id)
+}
+
 pub fn format_timestamp(ts: u64) -> String {
     if ts == 0 {
         return "—".into();

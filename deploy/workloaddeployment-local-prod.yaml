@@ -1,3 +1,5 @@
+# DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION. No auth/TLS, dev secrets, dev_mode flags. See SECURITY.md for production hardening.
+# WARNING: the bootstrap_hook grants set_superadmin(true) only to the configured __SUPERADMIN_EMAIL__ (and deny()s everyone else) — still a dev/simulation config, not for production.
 apiVersion: runtime.wasmcloud.dev/v1alpha1
 kind: WorkloadDeployment
 metadata:

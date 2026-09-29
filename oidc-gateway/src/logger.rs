@@ -17,17 +17,22 @@ fn request_context() -> &'static Mutex<Option<RequestContext>> {
     REQUEST_CONTEXT.get_or_init(|| Mutex::new(None))
 }
 
+/// Client IP for logging/rate-limiting. Uses the LAST x-forwarded-for entry
+/// (appended by the nearest trusted proxy); earlier entries are client-supplied
+/// and trivially spoofable. Note: no `trust_xff` config gating — last-entry
+/// behavior is applied unconditionally.
 pub fn request_remote_ip(headers: &HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|s| s.split(',').map(str::trim).rfind(|p| !p.is_empty()))
+        .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 
 pub fn begin_request(headers: &HeaderMap, method: &Method, path: &str, remote_ip: &str) -> String {
+    // Never log query strings: they can carry tokens and other secrets.
+    let path = path.split('?').next().unwrap_or(path);
     let trace_id = extract_trace_id(headers).unwrap_or_else(generate_trace_id);
     let ctx = RequestContext {
         trace_id: trace_id.clone(),

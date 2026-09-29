@@ -1,3 +1,5 @@
+# DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION. No auth/TLS, dev secrets, dev_mode flags. See SECURITY.md for production hardening.
+# WARNING: bootstrap_hook set_superadmin(true) with allow_registration: "true" promotes the first registrant to superadmin — integration-test use only.
 apiVersion: runtime.wasmcloud.dev/v1alpha1
 kind: WorkloadDeployment
 metadata:

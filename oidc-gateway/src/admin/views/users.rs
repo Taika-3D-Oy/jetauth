@@ -1,8 +1,8 @@
-use crate::admin::layout::{render_layout, AdminSession};
+use crate::admin::layout::{AdminSession, render_layout};
 use crate::admin::views::{format_timestamp, relative_time, render_status_badge};
 use crate::store::{self, Membership, PasskeyCredential, Tenant, User};
 use http::Response;
-use maud::{html, Markup};
+use maud::{Markup, html};
 use std::collections::HashMap;
 
 pub async fn render_users_page(session: &AdminSession) -> Response<String> {
@@ -168,7 +168,6 @@ pub fn render_add_user_tenant_modal(user: &User, tenants: &[Tenant]) -> Markup {
                         select name="role" id="role" {
                             option value="member" selected { "Member (Standard user access)" }
                             option value="admin" { "Admin (Tenant administrator)" }
-                            option value="manager" { "Manager (Operational manager)" }
                             option value="owner" { "Owner (Full tenant ownership)" }
                         }
                     }

@@ -82,6 +82,7 @@ pub async fn callback(
     query: &str,
     issuer: &str,
     remote_ip: &str,
+    headers: &http::HeaderMap,
 ) -> Result<Response<String>, String> {
     let params = util::parse_query(query);
     let get = |key: &str| -> Option<&str> {
@@ -109,6 +110,19 @@ pub async fn callback(
         return Ok(crate::login::login_page(
             &session_id,
             Some("Auth session expired. Please start over."),
+        )
+        .await);
+    }
+
+    // Browser binding (login CSRF): the lid_flow cookie set at /authorize must
+    // match this session. Device-flow sessions are created by /device and exempt.
+    if session.code_challenge_method != "device"
+        && !crate::account::flow_cookie_matches(headers, &session_id)
+    {
+        let _ = store::log_audit("social_flow_cookie_mismatch", "", "", "google").await;
+        return Ok(crate::login::login_page(
+            &session_id,
+            Some("Your sign-in session could not be verified. Please start over."),
         )
         .await);
     }
@@ -247,6 +261,11 @@ pub async fn callback(
                 reason,
             )
             .await;
+            // Remove the just-created account: a deny must not leave a user record.
+            let _ = store::delete_user(&user.id).await;
+            if let Err(e) = store::delete_social_identity("google", google_sub).await {
+                crate::logger::error_message("social_identity.cleanup_failed", e);
+            }
             return Ok(crate::login::login_page(&session_id, Some(reason)).await);
         }
         if let Err(e) = crate::hooks::apply_outcome(&mut user, &boot).await {
@@ -258,6 +277,10 @@ pub async fn callback(
         if let Some(reason) = &outcome.deny_reason {
             let _ =
                 store::log_audit("registration_denied_by_hook", &user.id, &user.id, reason).await;
+            let _ = store::delete_user(&user.id).await;
+            if let Err(e) = store::delete_social_identity("google", google_sub).await {
+                crate::logger::error_message("social_identity.cleanup_failed", e);
+            }
             return Ok(crate::login::login_page(&session_id, Some(reason)).await);
         }
         if let Err(e) = crate::hooks::apply_outcome(&mut user, &outcome).await {

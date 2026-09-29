@@ -32,7 +32,17 @@ fn map_token_error(e: &str) -> Response<String> {
         || e.contains("unregistered client")
         || e.contains("invalid client")
     {
-        token_error(StatusCode::UNAUTHORIZED, "invalid_client", e)
+        // Don't leak client existence: detail stays in the server-side log,
+        // callers get a generic invalid_client (mirrors the lib.rs mapping).
+        crate::logger::warn(
+            "token.client_auth_failed",
+            serde_json::json!({ "error": e }),
+        );
+        token_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client authentication failed",
+        )
     } else if e.contains("grant_type") || e.contains("not authorized to use") {
         token_error(StatusCode::BAD_REQUEST, "unauthorized_client", e)
     } else if e.contains("code")
@@ -197,6 +207,9 @@ async fn handle_code_exchange(
     let user = store::get_user(&auth_code.user_id)
         .await?
         .ok_or("user not found")?;
+    if user.status != "active" {
+        return Err("user account is not active".into());
+    }
 
     let nonce = if auth_code.nonce.is_empty() {
         None
@@ -250,6 +263,7 @@ async fn handle_code_exchange(
         requested_userinfo_claims: auth_code.requested_userinfo_claims.clone(),
         issued_at: now,
         sid: auth_code.sid.clone(),
+        dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
     };
     store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
 
@@ -348,6 +362,18 @@ async fn handle_refresh(
     if entry.client_id != client.client_id {
         return Err("client_id mismatch".into());
     }
+    // RFC 9449 §6: a refresh token issued with a DPoP proof stays bound to that key
+    if let Some(expected_jkt) = &entry.dpop_jkt {
+        match dpop_jkt {
+            Some(jkt) if jkt == expected_jkt => {}
+            Some(_) => {
+                return Err("DPoP proof key does not match refresh token binding".into());
+            }
+            None => {
+                return Err("DPoP proof required for refresh token bound to a DPoP key".into());
+            }
+        }
+    }
     let now = store::unix_now();
     if now > entry.expires_at {
         let _ = store::delete_refresh_token(&refresh_hash).await;
@@ -376,13 +402,17 @@ async fn handle_refresh(
     }
 
     // CAS: atomically consume the old refresh token
-    store::consume_refresh_token(&refresh_hash, revision)
+    store::consume_refresh_token(&refresh_hash, revision, &entry.user_id)
         .await
         .map_err(|_| "refresh token already consumed".to_string())?;
 
     let user = store::get_user(&entry.user_id)
         .await?
         .ok_or("user not found")?;
+    if user.status != "active" {
+        let _ = store::delete_user_refresh_tokens(&entry.user_id).await;
+        return Err("user account is not active".into());
+    }
 
     let auth_time = if entry.auth_time == 0 {
         store::unix_now()
@@ -431,6 +461,7 @@ async fn handle_refresh(
         // Carry original issuance timestamp forward through the family
         issued_at: family_issued_at,
         sid: entry.sid.clone(),
+        dpop_jkt: entry.dpop_jkt.clone(),
     };
     store::save_refresh_token(&new_refresh_hash, &new_entry).await?;
 
@@ -665,6 +696,7 @@ async fn handle_device_code(
                 requested_userinfo_claims: vec![],
                 issued_at: now,
                 sid: dc.sid.clone(),
+                dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
             };
             store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
 
@@ -839,11 +871,12 @@ pub async fn handle_introspect(
         _ => {}
     }
 
-    let response =
-        match crate::service_client::verify_token_scoped(token, Some(issuer), None, None).await {
-            Ok(claims) => build_introspection_response(&claims),
-            Err(_) => serde_json::json!({ "active": false }),
-        };
+    let response = match crate::service_client::verify_token_scoped(token, Some(issuer), None, None)
+        .await
+    {
+        Ok(claims) if introspectable_token_type(&claims) => build_introspection_response(&claims),
+        _ => serde_json::json!({ "active": false }),
+    };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -852,6 +885,15 @@ pub async fn handle_introspect(
         .header("pragma", "no-cache")
         .body(serde_json::to_string(&response).unwrap_or_default())
         .unwrap())
+}
+
+/// Introspection covers access tokens and client-credentials tokens;
+/// id_tokens and anything without a token_type claim are not introspectable.
+fn introspectable_token_type(claims: &serde_json::Value) -> bool {
+    matches!(
+        claims.get("token_type").and_then(|v| v.as_str()),
+        Some("access") | Some("client_credentials")
+    )
 }
 
 fn build_introspection_response(claims: &serde_json::Value) -> serde_json::Value {
@@ -1286,6 +1328,24 @@ mod tests {
             let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
             assert_eq!(val["error"], "invalid_client");
         });
+    }
+
+    #[test]
+    fn test_introspectable_token_type() {
+        // Access tokens and client-credentials tokens are introspectable
+        assert!(super::introspectable_token_type(
+            &serde_json::json!({"token_type": "access"})
+        ));
+        assert!(super::introspectable_token_type(
+            &serde_json::json!({"token_type": "client_credentials"})
+        ));
+        // id_tokens (no token_type claim) and other types are not
+        assert!(!super::introspectable_token_type(
+            &serde_json::json!({"sub": "user-123"})
+        ));
+        assert!(!super::introspectable_token_type(
+            &serde_json::json!({"token_type": "id_token"})
+        ));
     }
 
     #[test]

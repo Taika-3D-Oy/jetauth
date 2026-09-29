@@ -52,6 +52,10 @@ pub async fn send_request(request: http::Request<String>) -> Result<(u16, Vec<u8
     }
 
     let opts = RequestOptions::new();
+    // Conservative outbound timeouts (durations are nanoseconds).
+    let _ = opts.set_connect_timeout(Some(5_000_000_000));
+    let _ = opts.set_first_byte_timeout(Some(10_000_000_000));
+    let _ = opts.set_between_bytes_timeout(Some(10_000_000_000));
     let fut = outgoing_handler::handle(outgoing, Some(opts))
         .map_err(|e| format!("outgoing_handler: {e:?}"))?;
     let pollable = fut.subscribe();

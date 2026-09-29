@@ -127,14 +127,16 @@ pub fn verify(
                 )
                 .map_err(|e| format!("payload parse: {e}"))?;
 
-                if let Some(exp) = claims.get("exp").and_then(|v| v.as_u64()) {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    if now > exp {
-                        return Err("token expired".into());
-                    }
+                let exp = claims
+                    .get("exp")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("token missing exp claim")?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if now > exp {
+                    return Err("token expired".into());
                 }
                 return Ok(claims);
             }
@@ -255,8 +257,8 @@ pub fn verify_jwt_with_jwk(
             point.extend_from_slice(&y);
             let vk = EcVerifyingKey::from_sec1_bytes(&point)
                 .map_err(|e| format!("invalid EC key: {e}"))?;
+            // JWS (RFC 7518 §3.4) mandates raw R||S encoding — no DER fallback
             let sig = EcSig::from_bytes(sig_bytes.as_slice().into())
-                .or_else(|_| EcSig::from_der(&sig_bytes))
                 .map_err(|e| format!("bad ES256 signature: {e}"))?;
             EcVerifier::verify(&vk, message.as_bytes(), &sig)
                 .map_err(|e| format!("ES256 verification failed: {e}"))?;

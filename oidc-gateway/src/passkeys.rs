@@ -235,10 +235,14 @@ pub fn verify_assertion(
         return Err("RP ID hash mismatch".into());
     }
 
-    // 4. Check user presence
+    // 4. Check user presence (UP, 0x01) and user verification (UV, 0x04).
+    // UV is required: passkey assertions double as the second factor.
     let flags = auth_data[32];
     if flags & 0x01 == 0 {
         return Err("user presence flag not set".into());
+    }
+    if flags & 0x04 == 0 {
+        return Err("user verification flag not set".into());
     }
 
     // 5. Sign counter check
@@ -415,7 +419,7 @@ pub fn registration_options_json(
         "attestation": "none",
         "authenticatorSelection": {
             "residentKey": "preferred",
-            "userVerification": "preferred",
+            "userVerification": "required",
         },
         "excludeCredentials": exclude,
     })
@@ -440,7 +444,7 @@ pub fn authentication_options_json(
         "challenge": challenge,
         "rpId": rp_id(),
         "timeout": 120000,
-        "userVerification": "preferred",
+        "userVerification": "required",
     });
 
     // If we have specific credentials, include them; otherwise allow discoverable

@@ -71,6 +71,30 @@ pub fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+/// Escape a string for safe interpolation inside a single-quoted JavaScript
+/// string literal embedded in HTML (neutralizes quote, backslash and `<` so
+/// the value cannot break out of the literal or the <script> block).
+pub fn js_string_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '"' => out.push_str("\\\""),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '/' => out.push_str("\\/"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Percent-encode a string for use in URLs (RFC 3986 unreserved characters pass through).
 pub fn percent_encode(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 3);

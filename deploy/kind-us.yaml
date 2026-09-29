@@ -1,3 +1,4 @@
+# DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION. No auth/TLS, dev secrets, dev_mode flags. See SECURITY.md for production hardening.
 # Kind cluster config for US region (separate cluster per region).
 # Gateway exposed on host port 8001 (external) and 80 (cross-region internal).
 kind: Cluster
