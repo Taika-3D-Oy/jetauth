@@ -1041,12 +1041,16 @@ async fn build_claims(
     if user.superadmin {
         access_claims["role"] = serde_json::json!("superadmin");
         id_claims["role"] = serde_json::json!("superadmin");
-    } else if memberships.len() == 1 {
+    }
+
+    if memberships.len() == 1 {
         let membership = &memberships[0];
         access_claims["tenant_id"] = serde_json::json!(membership.tenant_id);
-        access_claims["role"] = serde_json::json!(membership.role);
         id_claims["tenant_id"] = serde_json::json!(membership.tenant_id);
-        id_claims["role"] = serde_json::json!(membership.role);
+        if !user.superadmin {
+            access_claims["role"] = serde_json::json!(membership.role);
+            id_claims["role"] = serde_json::json!(membership.role);
+        }
     } else if memberships.len() > 1 {
         let tenants: Vec<serde_json::Value> = memberships
             .iter()
@@ -1059,6 +1063,12 @@ async fn build_claims(
             .collect();
         access_claims["tenants"] = serde_json::json!(tenants);
         id_claims["tenants"] = serde_json::json!(tenants);
+        access_claims["tenant_id"] = serde_json::json!(memberships[0].tenant_id);
+        id_claims["tenant_id"] = serde_json::json!(memberships[0].tenant_id);
+        if !user.superadmin {
+            access_claims["role"] = serde_json::json!(memberships[0].role);
+            id_claims["role"] = serde_json::json!(memberships[0].role);
+        }
     }
 
     // Add requested id_token claims from user profile
