@@ -1437,11 +1437,11 @@ pub async fn kv_delete(store_name: &str, key: &str) -> Result<(), String> {
 
 async fn kv_list_keys(store_name: &str) -> Result<Vec<String>, String> {
     let mut all_keys = Vec::new();
-    let mut cursor: Option<String> = None;
+    let mut cursor: Option<u64> = None;
     loop {
         let mut payload = serde_json::json!({ "table": store_name });
-        if let Some(ref c) = cursor {
-            payload["cursor"] = serde_json::Value::String(c.clone());
+        if let Some(c) = cursor {
+            payload["cursor"] = serde_json::json!(c);
         }
         let resp = ldb_request("keys", &payload).await?;
         if let Some(keys) = resp.get("keys").and_then(|v| v.as_array()) {
@@ -1451,9 +1451,9 @@ async fn kv_list_keys(store_name: &str) -> Result<Vec<String>, String> {
                 }
             }
         }
-        match resp.get("next_cursor").and_then(|v| v.as_str()) {
-            Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
-            _ => break,
+        match resp.get("next_cursor").and_then(|v| v.as_u64()) {
+            Some(c) => cursor = Some(c),
+            None => break,
         }
     }
     Ok(all_keys)
@@ -2407,7 +2407,7 @@ pub async fn list_audit_events(
 
 /// Marker key recording that the one-time plaintext→ciphertext rewrite has
 /// completed for this region's buckets.
-const ENCRYPTION_MIGRATION_MARKER: &str = "migration:encrypt-v1";
+const ENCRYPTION_MIGRATION_MARKER: &str = "migration:encrypt-v2";
 
 /// Whether server-side envelope encryption of lattice-db tables is enabled
 /// (`encrypt_tables=true`). Requires LDB_MASTER_KEY on the storage-service.
