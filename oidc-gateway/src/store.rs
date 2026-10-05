@@ -24,8 +24,6 @@ thread_local! {
     static SERVER_EPOCH: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Set to true once we've validated inbound epoch against server epoch.
     static EPOCH_VALIDATED: RefCell<bool> = const { RefCell::new(false) };
-    /// Set once table-encryption ensure has completed in this component instance.
-    static ENCRYPTION_ENSURED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Seed session revisions from an external source (e.g. inbound consistency cookie/header).
@@ -2451,14 +2449,21 @@ async fn kv_schema_set_encrypted(store_name: &str) -> Result<(), String> {
 /// on the storage-service's next reload, so the rewrite must complete before
 /// the storage-service restarts with the encrypted schemas in place.
 ///
-/// Idempotent and cheap to call per request: a thread-local guard makes it a
-/// no-op after the first success in this component instance, and the marker
-/// key skips the rewrite once it has completed in this region.
+/// wasmCloud components are instantiated fresh per request, so no in-memory
+/// guard is possible: the migration marker key is the cross-request guard.
+/// With the marker present this costs one `get` per request. If the table
+/// list ever changes, bump the marker suffix (encrypt-v2, …) so the new
+/// tables get their schemas set.
 pub async fn ensure_table_encryption() -> Result<(), String> {
     if !encrypt_tables_enabled() {
         return Ok(());
     }
-    if ENCRYPTION_ENSURED.with(|e| *e.borrow()) {
+
+    // Fast path: marker present → schemas set and rows already rewritten.
+    if kv_get_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER)
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
 
@@ -2467,33 +2472,26 @@ pub async fn ensure_table_encryption() -> Result<(), String> {
         kv_schema_set_encrypted(table).await?;
     }
 
-    let migrated = kv_get_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER)
-        .await?
-        .is_some();
-    if !migrated {
-        for table in &tables {
-            // Ephemeral rate-limit counters roll over on their own.
-            if table == "abuse-rate-limits" {
-                continue;
-            }
-            let keys = kv_list_keys(table).await?;
-            let mut rewritten = 0usize;
-            for key in &keys {
-                if let Some(bytes) = kv_get_raw(table, key).await? {
-                    kv_set_raw(table, key, &bytes).await?;
-                    rewritten += 1;
-                }
-            }
-            eprintln!(
-                "ENCRYPTION: rewrote {rewritten}/{} rows in table {table}",
-                keys.len()
-            );
+    for table in &tables {
+        // Ephemeral rate-limit counters roll over on their own.
+        if table == "abuse-rate-limits" {
+            continue;
         }
-        kv_set_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER, b"1").await?;
-        eprintln!("ENCRYPTION: plaintext->ciphertext migration complete");
+        let keys = kv_list_keys(table).await?;
+        let mut rewritten = 0usize;
+        for key in &keys {
+            if let Some(bytes) = kv_get_raw(table, key).await? {
+                kv_set_raw(table, key, &bytes).await?;
+                rewritten += 1;
+            }
+        }
+        eprintln!(
+            "ENCRYPTION: rewrote {rewritten}/{} rows in table {table}",
+            keys.len()
+        );
     }
-
-    ENCRYPTION_ENSURED.with(|e| *e.borrow_mut() = true);
+    kv_set_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER, b"1").await?;
+    eprintln!("ENCRYPTION: plaintext->ciphertext migration complete");
     Ok(())
 }
 
