@@ -432,6 +432,14 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         let _ = store::ensure_admin_client(&issuer, true).await;
     }
 
+    // Enable server-side table encryption and run the one-time plaintext
+    // rewrite when configured (`encrypt_tables=true`). No-op otherwise.
+    if store::encrypt_tables_enabled()
+        && let Err(e) = store::ensure_table_encryption().await
+    {
+        eprintln!("ENCRYPTION: ensure_table_encryption failed: {e}");
+    }
+
     match (&parts.method, route_path) {
         // ── Health / Readiness ─────────────────────────────
         (&Method::GET, "/healthz") => Ok(healthz()),

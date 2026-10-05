@@ -24,6 +24,8 @@ thread_local! {
     static SERVER_EPOCH: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Set to true once we've validated inbound epoch against server epoch.
     static EPOCH_VALIDATED: RefCell<bool> = const { RefCell::new(false) };
+    /// Set once table-encryption ensure has completed in this component instance.
+    static ENCRYPTION_ENSURED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Seed session revisions from an external source (e.g. inbound consistency cookie/header).
@@ -94,6 +96,7 @@ struct OidcConfigCache {
     client_secret_pepper: Option<String>,
     client_registration_mode: Option<String>,
     client_registration_token: Option<String>,
+    encrypt_tables: Option<String>,
 }
 
 /// Must be called once at startup / per request to load config values.
@@ -122,6 +125,7 @@ pub async fn init_config() {
     let client_secret_pepper = config_value_async("client_secret_pepper").await;
     let client_registration_mode = config_value_async("client_registration_mode").await;
     let client_registration_token = config_value_async("client_registration_token").await;
+    let encrypt_tables = config_value_async("encrypt_tables").await;
 
     CONFIG_CACHE.with(|c| {
         *c.borrow_mut() = Some(OidcConfigCache {
@@ -144,6 +148,7 @@ pub async fn init_config() {
             client_secret_pepper,
             client_registration_mode,
             client_registration_token,
+            encrypt_tables,
         });
     });
 }
@@ -175,6 +180,7 @@ pub fn init_config_for_test(dev_mode: bool, client_secret_pepper: Option<&str>) 
             client_secret_pepper: client_secret_pepper.map(|s| s.to_string()),
             client_registration_mode: None,
             client_registration_token: None,
+            encrypt_tables: None,
         });
     });
 }
@@ -202,6 +208,7 @@ pub fn init_registration_config_for_test(mode: &str, token: Option<&str>) {
             client_secret_pepper: Some("test_pepper_123456789012345678901234567890".to_string()),
             client_registration_mode: Some(mode.to_string()),
             client_registration_token: token.map(|s| s.to_string()),
+            encrypt_tables: None,
         });
     });
 }
@@ -242,6 +249,7 @@ pub fn config_value(key: &str) -> Option<String> {
         "client_secret_pepper" => c.client_secret_pepper.clone(),
         "client_registration_mode" => c.client_registration_mode.clone(),
         "client_registration_token" => c.client_registration_token.clone(),
+        "encrypt_tables" => c.encrypt_tables.clone(),
         _ => None,
     })
     .flatten()
@@ -2395,6 +2403,98 @@ pub async fn list_audit_events(
     });
 
     Ok(events)
+}
+
+// ── Server-side table encryption (lattice-db ≥1.9.0) ────────────────────────
+
+/// Marker key recording that the one-time plaintext→ciphertext rewrite has
+/// completed for this region's buckets.
+const ENCRYPTION_MIGRATION_MARKER: &str = "migration:encrypt-v1";
+
+/// Whether server-side envelope encryption of lattice-db tables is enabled
+/// (`encrypt_tables=true`). Requires LDB_MASTER_KEY on the storage-service.
+pub fn encrypt_tables_enabled() -> bool {
+    config_value("encrypt_tables")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
+/// All tables whose values must be encrypted at rest in the KV buckets.
+fn encrypted_tables() -> Vec<String> {
+    vec![
+        users_store(),
+        user_idx_store(),
+        sessions_store(),
+        clients_store(),
+        tenants_store(),
+        memberships_store(),
+        audit_store(),
+        "keys".to_string(),
+        "abuse-rate-limits".to_string(),
+    ]
+}
+
+/// Mark a table encrypted in lattice-db (idempotent; applies to subsequent writes).
+async fn kv_schema_set_encrypted(store_name: &str) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "table": store_name,
+        "schema": { "encrypted": true },
+    });
+    ldb_request("schema.set", &payload).await?;
+    Ok(())
+}
+
+/// Ensure all JetAuth tables are marked encrypted in lattice-db and rewrite
+/// existing plaintext rows so no readable values remain in the KV buckets.
+///
+/// Ordering matters: plaintext rows fail decryption and are silently dropped
+/// on the storage-service's next reload, so the rewrite must complete before
+/// the storage-service restarts with the encrypted schemas in place.
+///
+/// Idempotent and cheap to call per request: a thread-local guard makes it a
+/// no-op after the first success in this component instance, and the marker
+/// key skips the rewrite once it has completed in this region.
+pub async fn ensure_table_encryption() -> Result<(), String> {
+    if !encrypt_tables_enabled() {
+        return Ok(());
+    }
+    if ENCRYPTION_ENSURED.with(|e| *e.borrow()) {
+        return Ok(());
+    }
+
+    let tables = encrypted_tables();
+    for table in &tables {
+        kv_schema_set_encrypted(table).await?;
+    }
+
+    let migrated = kv_get_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER)
+        .await?
+        .is_some();
+    if !migrated {
+        for table in &tables {
+            // Ephemeral rate-limit counters roll over on their own.
+            if table == "abuse-rate-limits" {
+                continue;
+            }
+            let keys = kv_list_keys(table).await?;
+            let mut rewritten = 0usize;
+            for key in &keys {
+                if let Some(bytes) = kv_get_raw(table, key).await? {
+                    kv_set_raw(table, key, &bytes).await?;
+                    rewritten += 1;
+                }
+            }
+            eprintln!(
+                "ENCRYPTION: rewrote {rewritten}/{} rows in table {table}",
+                keys.len()
+            );
+        }
+        kv_set_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER, b"1").await?;
+        eprintln!("ENCRYPTION: plaintext->ciphertext migration complete");
+    }
+
+    ENCRYPTION_ENSURED.with(|e| *e.borrow_mut() = true);
+    Ok(())
 }
 
 /// Ensure a default OIDC client exists for development/testing.
