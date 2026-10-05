@@ -2445,9 +2445,13 @@ async fn kv_schema_set_encrypted(store_name: &str) -> Result<(), String> {
 /// Ensure all JetAuth tables are marked encrypted in lattice-db and rewrite
 /// existing plaintext rows so no readable values remain in the KV buckets.
 ///
-/// Ordering matters: plaintext rows fail decryption and are silently dropped
-/// on the storage-service's next reload, so the rewrite must complete before
-/// the storage-service restarts with the encrypted schemas in place.
+/// Ordering matters — two invariants keep this safe:
+/// 1. Tables load lazily on first access, and rows are decrypted with the
+///    schema in effect at load time. Every table must be warmed (forced to
+///    load its plaintext rows into the storage-service cache) BEFORE its
+///    schema flips to encrypted, or the plaintext rows are skipped on load.
+/// 2. The rewrite must complete before the storage-service next reloads:
+///    plaintext rows left in KV fail decryption and are dropped on reload.
 ///
 /// wasmCloud components are instantiated fresh per request, so no in-memory
 /// guard is possible: the migration marker key is the cross-request guard.
@@ -2468,6 +2472,14 @@ pub async fn ensure_table_encryption() -> Result<(), String> {
     }
 
     let tables = encrypted_tables();
+
+    // Warm every table while its schema is still unencrypted. A get on a
+    // nonexistent key forces the lazy load; `keys` alone would return an
+    // empty list for an unloaded table.
+    for table in &tables {
+        let _ = kv_get_raw(table, "__encryption_warmup__").await?;
+    }
+
     for table in &tables {
         kv_schema_set_encrypted(table).await?;
     }
@@ -2485,12 +2497,23 @@ pub async fn ensure_table_encryption() -> Result<(), String> {
                 rewritten += 1;
             }
         }
+        if rewritten != keys.len() {
+            return Err(format!(
+                "encryption rewrite of {table}: only {rewritten}/{} rows readable — refusing to mark migration complete",
+                keys.len()
+            ));
+        }
         eprintln!(
             "ENCRYPTION: rewrote {rewritten}/{} rows in table {table}",
             keys.len()
         );
     }
-    kv_set_raw(&sessions_store(), ENCRYPTION_MIGRATION_MARKER, b"1").await?;
+    kv_set_raw(
+        &sessions_store(),
+        ENCRYPTION_MIGRATION_MARKER,
+        br#"{"done":true}"#,
+    )
+    .await?;
     eprintln!("ENCRYPTION: plaintext->ciphertext migration complete");
     Ok(())
 }
