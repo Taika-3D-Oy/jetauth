@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "email-worker"
-version = "2.0.0-rc.9"
+version = "2.0.0-rc.10"
 dependencies = [
  "bytes",
  "chrono",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "oidc-gateway"
-version = "2.0.0-rc.9"
+version = "2.0.0-rc.10"
 dependencies = [
  "base64",
  "bytes",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "password-hasher"
-version = "2.0.0-rc.9"
+version = "2.0.0-rc.10"
 dependencies = [
  "argon2",
  "password-hash",

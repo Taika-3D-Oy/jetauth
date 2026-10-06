@@ -1056,8 +1056,15 @@ pub(crate) async fn ldb_request(
             return Err(err.to_string());
         }
 
-        // Track session revisions for consistency.
-        if let Some(revisions) = val.get("revisions").and_then(|r| r.as_object()) {
+        // Track session revisions for consistency. The server nests these
+        // under `session` (`session.revisions` / `session.epoch`); tolerate a
+        // top-level shape too.
+        let session = val.get("session");
+        let revisions = session
+            .and_then(|s| s.get("revisions"))
+            .or_else(|| val.get("revisions"))
+            .and_then(|r| r.as_object());
+        if let Some(revisions) = revisions {
             SESSION_REVISIONS.with(|sr| {
                 let mut map = sr.borrow_mut();
                 for (table, rev) in revisions {
@@ -1071,7 +1078,11 @@ pub(crate) async fn ldb_request(
             });
         }
 
-        if let Some(server_epoch) = val.get("epoch").and_then(|e| e.as_str()) {
+        let server_epoch = session
+            .and_then(|s| s.get("epoch"))
+            .or_else(|| val.get("epoch"))
+            .and_then(|e| e.as_str());
+        if let Some(server_epoch) = server_epoch {
             validate_epoch(server_epoch);
         }
 
