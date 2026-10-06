@@ -1451,7 +1451,13 @@ async fn kv_list_keys(store_name: &str) -> Result<Vec<String>, String> {
                 }
             }
         }
-        match resp.get("next_cursor").and_then(|v| v.as_u64()) {
+        // Server sends next_cursor as a string; tolerate a numeric form too.
+        let next = resp.get("next_cursor").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .or_else(|| v.as_u64())
+        });
+        match next {
             Some(c) => cursor = Some(c),
             None => break,
         }

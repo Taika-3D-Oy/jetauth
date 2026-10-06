@@ -30,6 +30,7 @@ Runs as a single wasmCloud WorkloadDeployment with [jetcache](https://github.com
   - Passkeys (WebAuthn / FIDO2) for passwordless authentication
   - TOTP MFA with recovery codes, brute-force protection, account lockout
   - SSR Maud + HTMX Admin Panel embedded directly at `/admin`
+  - REST Management API & OpenAPI 3.1: [MANAGEMENT_API.md](MANAGEMENT_API.md) ([openapi.yaml](openapi.yaml))
   - Dynamic theming engine with 6 built-in presets: [THEMING.md](THEMING.md)
   - GDPR export (`GET /api/users/:id/export`) and erasure (`DELETE /api/users/:id`)
   - Multi-region routing and replication: [MULTI_REGION.md](MULTI_REGION.md)

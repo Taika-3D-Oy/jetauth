@@ -1,0 +1,1610 @@
+openapi: 3.1.0
+info:
+  title: JetAuth Management API
+  description: |
+    Comprehensive REST Management API for JetAuth (formerly Lattice-ID), an enterprise-grade,
+    NATS-native OIDC / OAuth 2.0 Identity Provider built for wasmCloud and modern cloud environments.
+  version: 2.0.0-rc.8
+  contact:
+    name: Taika 3D Oy
+    url: https://github.com/Taika-3D-Oy/jetauth
+
+servers:
+  - url: http://localhost:8000
+    description: Local development authority
+  - url: https://auth.example.com
+    description: Production authority
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ── Bootstrap & Settings ──
+  /api/bootstrap/status:
+    get:
+      summary: Check bootstrap status
+      description: Returns whether the identity provider has a superadmin initialized or requires initial bootstrapping.
+      security: []
+      responses:
+        '200':
+          description: Bootstrap status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [needs_bootstrap]
+                properties:
+                  needs_bootstrap:
+                    type: boolean
+                    example: false
+
+  /api/settings:
+    get:
+      summary: Read global system settings
+      description: Returns runtime settings such as public user registration policy. Requires superadmin privileges.
+      responses:
+        '200':
+          description: Global runtime settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      summary: Update global system settings
+      description: Updates runtime system settings. Requires superadmin privileges.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsUpdateRequest'
+      responses:
+        '200':
+          description: Settings updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── OAuth 2.0 / OIDC Clients ──
+  /api/clients:
+    get:
+      summary: List all OAuth clients
+      description: Returns all registered OAuth 2.0 clients across the deployment. Client secrets are redacted.
+      responses:
+        '200':
+          description: Array of registered clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OidcClient'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create an OAuth client
+      description: Registers a new OAuth 2.0 / OIDC client application. If confidential is true, returns the raw client_secret once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OidcClientCreateRequest'
+      responses:
+        '201':
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClient'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/clients/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Unique client_id
+        schema:
+          type: string
+    get:
+      summary: Get client details
+      description: Returns configuration details and theming for a specific client.
+      responses:
+        '200':
+          description: Client details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClient'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Update client details
+      description: Updates client metadata, redirect URIs, theme, and authentication settings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OidcClientUpdateRequest'
+      responses:
+        '200':
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcClient'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete client
+      description: Deletes an OAuth 2.0 client application. The built-in `lid-admin` client cannot be deleted.
+      responses:
+        '200':
+          description: Client deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Tenants & Organizations ──
+  /api/tenants:
+    get:
+      summary: List all tenants
+      description: Returns all organizations/tenants. Requires superadmin privileges.
+      responses:
+        '200':
+          description: List of tenants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create a tenant
+      description: Creates a new tenant organization and replicates it across regions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreateRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/tenants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Tenant ID
+        schema:
+          type: string
+    get:
+      summary: Get tenant details
+      responses:
+        '200':
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete tenant
+      responses:
+        '200':
+          description: Tenant deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/tenants/{id}/users:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Tenant ID
+        schema:
+          type: string
+    get:
+      summary: List tenant users
+      description: Returns all user memberships in the tenant.
+      responses:
+        '200':
+          description: List of members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TenantUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Add existing user to tenant
+      description: Assigns a user to the tenant with a specific role (owner, admin, manager, member).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUserAddRequest'
+      responses:
+        '201':
+          description: User added to tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                  user_id:
+                    type: string
+                  role:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/tenants/{id}/users/invite:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Tenant ID
+        schema:
+          type: string
+    post:
+      summary: Invite user by email
+      description: Dispatches an invitation email with a 7-day token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantUserInviteRequest'
+      responses:
+        '201':
+          description: Invitation created and email dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantUserInviteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/tenants/{tid}/users/{uid}:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        description: Tenant ID
+        schema:
+          type: string
+      - name: uid
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    delete:
+      summary: Remove user from tenant
+      responses:
+        '200':
+          description: User removed from tenant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/invitations/accept:
+    post:
+      summary: Accept tenant invitation
+      description: Accepts an invitation token and links the user to the tenant.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+      responses:
+        '201':
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                  user_id:
+                    type: string
+                  role:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ── Users & GDPR ──
+  /api/users/{id}/password-reset:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    post:
+      summary: Initiate password reset
+      description: Generates a 1-hour password reset token and sends an email. Rate limited to 3 per hour.
+      responses:
+        '200':
+          description: Password reset email dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/users/{id}/export:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    get:
+      summary: GDPR Article 15/20 Data Portability Export
+      description: Exports all personal profile data, tenant memberships, and OAuth scope consents. Sensitive secrets are omitted.
+      responses:
+        '200':
+          description: Complete user data export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserExport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    delete:
+      summary: GDPR Article 17 Right to Erasure
+      description: Permanently hard-deletes the user, email index, sessions, and memberships. Superadmins cannot self-delete.
+      responses:
+        '200':
+          description: User permanently deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+                  id:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── MFA (TOTP) ──
+  /api/users/{id}/mfa/setup:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    post:
+      summary: Initiate TOTP MFA setup
+      description: Generates an RFC 6238 secret and QR provisioning URI.
+      responses:
+        '200':
+          description: TOTP setup parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaSetupResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}/mfa/confirm:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    post:
+      summary: Verify TOTP code and enable MFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaConfirmRequest'
+      responses:
+        '200':
+          description: MFA enabled and recovery codes generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaConfirmResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}/mfa:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    delete:
+      summary: Disable MFA
+      description: Disables TOTP and invalidates all existing sessions and refresh tokens.
+      responses:
+        '200':
+          description: MFA disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Passkeys (WebAuthn / FIDO2) ──
+  /api/users/{id}/passkeys:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    get:
+      summary: List registered passkeys
+      responses:
+        '200':
+          description: List of user passkeys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PasskeySummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}/passkeys/register-options:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    post:
+      summary: Start passkey registration
+      description: Issues a WebAuthn creation challenge valid for 5 minutes.
+      responses:
+        '200':
+          description: WebAuthn registration options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyRegisterOptionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}/passkeys/register-complete:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    post:
+      summary: Complete passkey registration
+      description: Verifies authenticator attestation and registers the public key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasskeyRegisterCompleteRequest'
+      responses:
+        '200':
+          description: Passkey registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeySummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}/passkeys/{cred_id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+      - name: cred_id
+        in: path
+        required: true
+        description: Passkey credential ID
+        schema:
+          type: string
+    delete:
+      summary: Revoke passkey
+      responses:
+        '200':
+          description: Passkey deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Identity Providers (Upstream SSO) ──
+  /api/identity-providers:
+    get:
+      summary: List upstream identity providers
+      responses:
+        '200':
+          description: List of identity providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IdentityProvider'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Add an upstream identity provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityProviderCreateRequest'
+      responses:
+        '201':
+          description: Identity provider configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityProvider'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/identity-providers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Identity provider ID
+        schema:
+          type: string
+    delete:
+      summary: Remove upstream identity provider
+      responses:
+        '200':
+          description: Identity provider deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Lifecycle Hooks (Rhai) ──
+  /api/hooks:
+    get:
+      summary: List lifecycle hooks
+      responses:
+        '200':
+          description: List of hooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Hook'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create lifecycle hook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HookCreateRequest'
+      responses:
+        '201':
+          description: Hook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/hooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Hook ID
+        schema:
+          type: string
+    put:
+      summary: Update hook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HookUpdateRequest'
+      responses:
+        '200':
+          description: Hook updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete hook
+      responses:
+        '200':
+          description: Hook deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                  last_version:
+                    type: integer
+                  script_hash:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/hooks/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Hook ID
+        schema:
+          type: string
+    post:
+      summary: Dry-run execute hook
+      description: Compiles and dry-runs the hook script against mock session attributes.
+      responses:
+        '200':
+          description: Test execution result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookTestResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/hooks/{id}/versions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Hook ID
+        schema:
+          type: string
+    get:
+      summary: View historical versions of a hook
+      responses:
+        '200':
+          description: Immutable version history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HookVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Audit Trail ──
+  /api/audit:
+    get:
+      summary: Query audit events
+      description: Fetches append-only audit events from NATS JetStream.
+      parameters:
+        - name: actor_id
+          in: query
+          description: Filter by actor user ID
+          schema:
+            type: string
+        - name: target_id
+          in: query
+          description: Filter by target resource ID
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          description: Filter by event type
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Filter events starting at this Unix epoch timestamp (seconds)
+          schema:
+            type: integer
+        - name: until
+          in: query
+          description: Filter events ending at this Unix epoch timestamp (seconds)
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          description: Maximum number of events to return (default 100, max 500)
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Filtered audit log records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Dynamic Client Registration (RFC 7591 / RFC 7592) ──
+  /connect/register:
+    post:
+      summary: RFC 7591 Dynamic Client Registration
+      description: Dynamically provisions an OAuth 2.0 client application.
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                client_name:
+                  type: string
+                redirect_uris:
+                  type: array
+                  items:
+                    type: string
+                grant_types:
+                  type: array
+                  items:
+                    type: string
+                response_types:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Client registered
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        OAuth 2.0 Access Token issued by JetAuth with aud="lid-admin" and role="superadmin"
+        (or tenant manager role for tenant-scoped operations).
+
+    RegistrationAccessToken:
+      type: http
+      scheme: bearer
+      description: RFC 7592 Registration Access Token for dynamic client configuration.
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters or payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, invalid, or expired authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions or role hierarchy violation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: invalid_request
+        error_description:
+          type: string
+          example: name is required
+
+    SettingsResponse:
+      type: object
+      properties:
+        allow_registration:
+          type: boolean
+          example: true
+
+    SettingsUpdateRequest:
+      type: object
+      properties:
+        allow_registration:
+          type: boolean
+          example: false
+
+    OidcClient:
+      type: object
+      required: [client_id, name, redirect_uris]
+      properties:
+        client_id:
+          type: string
+          example: client_9fa2b3c4d5e6f7a8
+        client_secret:
+          type: string
+          description: Only populated once upon creation for confidential clients
+          example: 9a01f8e234c9876543210fedcba98765
+        name:
+          type: string
+          example: Customer Portal
+        redirect_uris:
+          type: array
+          items:
+            type: string
+          example: ["https://portal.example.com/callback"]
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+          example: ["https://portal.example.com/logged-out"]
+        grant_types:
+          type: array
+          items:
+            type: string
+          example: ["authorization_code", "refresh_token"]
+        first_party:
+          type: boolean
+          example: true
+        theme:
+          $ref: '#/components/schemas/ClientTheme'
+        backchannel_logout_uri:
+          type: string
+          nullable: true
+        backchannel_logout_session_required:
+          type: boolean
+        id_token_signed_response_alg:
+          type: string
+          example: RS256
+
+    OidcClientCreateRequest:
+      type: object
+      required: [name, redirect_uris]
+      properties:
+        name:
+          type: string
+          example: Customer Portal
+        redirect_uris:
+          type: array
+          items:
+            type: string
+          example: ["https://portal.example.com/callback"]
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+        grant_types:
+          type: array
+          items:
+            type: string
+          default: ["authorization_code", "refresh_token"]
+        confidential:
+          type: boolean
+          default: false
+        first_party:
+          type: boolean
+          default: false
+        id_token_signed_response_alg:
+          type: string
+          enum: [RS256, ES256]
+          default: RS256
+        backchannel_logout_uri:
+          type: string
+        backchannel_logout_session_required:
+          type: boolean
+          default: false
+        token_endpoint_auth_method:
+          type: string
+          enum: [client_secret_post, client_secret_basic, private_key_jwt, none]
+        require_pushed_authorization_requests:
+          type: boolean
+          default: false
+        theme:
+          $ref: '#/components/schemas/ClientTheme'
+
+    OidcClientUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        post_logout_redirect_uris:
+          type: array
+          items:
+            type: string
+        grant_types:
+          type: array
+          items:
+            type: string
+        first_party:
+          type: boolean
+        theme:
+          $ref: '#/components/schemas/ClientTheme'
+        backchannel_logout_uri:
+          type: string
+        backchannel_logout_session_required:
+          type: boolean
+        id_token_signed_response_alg:
+          type: string
+        token_endpoint_auth_method:
+          type: string
+        require_pushed_authorization_requests:
+          type: boolean
+
+    ClientTheme:
+      type: object
+      properties:
+        app_name:
+          type: string
+          example: Acme Portal
+        theme_preset:
+          type: string
+          enum: [taika-dark, taika-light, glassmorphic, cyberpunk, minimal-noir, neo-brutalist]
+          example: glassmorphic
+        logo_url:
+          type: string
+          example: https://portal.example.com/logo.svg
+        logo_height:
+          type: string
+          example: 48px
+        primary_color:
+          type: string
+          example: "#6366f1"
+        primary_hover_color:
+          type: string
+          example: "#4f46e5"
+        background_color:
+          type: string
+          example: "#0d0d12"
+        background_image_url:
+          type: string
+        footer_text:
+          type: string
+        powered_by_text:
+          type: string
+        hide_powered_by:
+          type: boolean
+        custom_css:
+          type: string
+
+    Tenant:
+      type: object
+      required: [id, name, display_name, status, created_at]
+      properties:
+        id:
+          type: string
+          example: tenant_1a2b3c4d
+        name:
+          type: string
+          example: acme-corp
+        display_name:
+          type: string
+          example: Acme Corporation
+        status:
+          type: string
+          example: active
+        created_at:
+          type: integer
+          example: 1775630000
+
+    TenantCreateRequest:
+      type: object
+      required: [name, display_name]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          example: acme-corp
+        display_name:
+          type: string
+          maxLength: 256
+          example: Acme Corporation
+
+    TenantUser:
+      type: object
+      properties:
+        id:
+          type: string
+          example: user_4f9a0c1e
+        email:
+          type: string
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+        role:
+          type: string
+          enum: [owner, admin, manager, member]
+          example: admin
+        joined_at:
+          type: integer
+          example: 1775631200
+
+    TenantUserAddRequest:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id:
+          type: string
+          example: user_4f9a0c1e
+        role:
+          type: string
+          enum: [owner, admin, manager, member]
+          example: member
+
+    TenantUserInviteRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+          example: newuser@example.com
+        role:
+          type: string
+          enum: [admin, manager, member]
+          example: member
+
+    TenantUserInviteResponse:
+      type: object
+      properties:
+        email:
+          type: string
+        role:
+          type: string
+        invite_token:
+          type: string
+        expires_at:
+          type: integer
+
+    InvitationAcceptRequest:
+      type: object
+      required: [token, user_id]
+      properties:
+        token:
+          type: string
+        user_id:
+          type: string
+
+    PasswordResetResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+        expires_in:
+          type: integer
+          example: 3600
+        message:
+          type: string
+
+    UserExport:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: integer
+        superadmin:
+          type: boolean
+        totp_enabled:
+          type: boolean
+        passkey_count:
+          type: integer
+        memberships:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id:
+                type: string
+              role:
+                type: string
+        consents:
+          type: array
+          items:
+            type: object
+            properties:
+              client_id:
+                type: string
+              scopes:
+                type: array
+                items:
+                  type: string
+              granted_at:
+                type: integer
+              updated_at:
+                type: integer
+
+    MfaSetupResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+          example: JBSWY3DPEHPK3PXP
+        otpauth_uri:
+          type: string
+
+    MfaConfirmRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          example: "123456"
+
+    MfaConfirmResponse:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          example: true
+        recovery_codes:
+          type: array
+          items:
+            type: string
+
+    PasskeySummary:
+      type: object
+      properties:
+        credential_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: integer
+        sign_count:
+          type: integer
+
+    PasskeyRegisterOptionsResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        publicKey:
+          type: object
+
+    PasskeyRegisterCompleteRequest:
+      type: object
+      required: [token, clientDataJSON, attestationObject]
+      properties:
+        token:
+          type: string
+        name:
+          type: string
+        clientDataJSON:
+          type: string
+        attestationObject:
+          type: string
+
+    IdentityProvider:
+      type: object
+      properties:
+        id:
+          type: string
+        provider_type:
+          type: string
+          enum: [google, github]
+        client_id:
+          type: string
+        enabled:
+          type: boolean
+
+    IdentityProviderCreateRequest:
+      type: object
+      required: [provider_type, client_id, client_secret]
+      properties:
+        provider_type:
+          type: string
+          enum: [google, github]
+        client_id:
+          type: string
+        client_secret:
+          type: string
+        enabled:
+          type: boolean
+          default: true
+
+    Hook:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        trigger:
+          type: string
+          enum: [post-login, post-registration]
+        script:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        version:
+          type: integer
+        script_hash:
+          type: string
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+        updated_by:
+          type: string
+
+    HookCreateRequest:
+      type: object
+      required: [name, trigger, script]
+      properties:
+        name:
+          type: string
+        trigger:
+          type: string
+          enum: [post-login, post-registration]
+        script:
+          type: string
+        enabled:
+          type: boolean
+          default: true
+        priority:
+          type: integer
+          default: 0
+
+    HookUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        trigger:
+          type: string
+        script:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+
+    HookTestResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        deny_reason:
+          type: string
+          nullable: true
+        set_superadmin:
+          type: boolean
+        add_to_tenants:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id:
+                type: string
+              role:
+                type: string
+        extra_claims:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              value:
+                type: string
+        log_messages:
+          type: array
+          items:
+            type: string
+
+    HookVersion:
+      type: object
+      properties:
+        hook_id:
+          type: string
+        version:
+          type: integer
+        name:
+          type: string
+        trigger:
+          type: string
+        script:
+          type: string
+        script_hash:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        changed_by:
+          type: string
+        changed_at:
+          type: integer
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: integer
+        event_type:
+          type: string
+        actor_id:
+          type: string
+        target_id:
+          type: string
+        details:
+          type: string
+
+    AuditResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        filters:
+          type: object
+          properties:
+            actor_id:
+              type: string
+              nullable: true
+            target_id:
+              type: string
+              nullable: true
+            event_type:
+              type: string
+              nullable: true
+            since:
+              type: integer
+              nullable: true
+            until:
+              type: integer
+              nullable: true
+            limit:
+              type: integer
