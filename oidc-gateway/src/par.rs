@@ -25,12 +25,31 @@ pub async fn handle_par(
             }
         };
 
+    let auth_method = auth_client.auth_method;
     let client = auth_client.client;
+    let is_confidential = client.client_secret.is_some() || client.jwks.is_some();
+    if is_confidential && auth_method == "none" {
+        return Ok(par_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "confidential client must authenticate at the PAR endpoint",
+        ));
+    }
+
     let get = |k: &str| -> Option<&str> {
         form.iter()
             .find(|(key, _)| key == k)
             .map(|(_, v)| v.as_str())
     };
+
+    // RFC 9126 §2.1: request_uri MUST NOT be provided in a PAR request.
+    if get("request_uri").is_some() {
+        return Ok(par_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "request_uri parameter is not permitted in a pushed authorization request",
+        ));
+    }
 
     // If client_id was passed in form, ensure it matches authenticated client
     if let Some(cid) = get("client_id")

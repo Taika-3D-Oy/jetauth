@@ -167,6 +167,7 @@ pub fn render_add_user_tenant_modal(user: &User, tenants: &[Tenant]) -> Markup {
                         label for="role" { "Role in Tenant" }
                         select name="role" id="role" {
                             option value="member" selected { "Member (Standard user access)" }
+                            option value="manager" { "Manager (Can manage members)" }
                             option value="admin" { "Admin (Tenant administrator)" }
                             option value="owner" { "Owner (Full tenant ownership)" }
                         }

@@ -122,11 +122,9 @@ pub async fn callback(
         .await);
     }
 
-    // Browser binding (login CSRF): the lid_flow cookie set at /authorize must
-    // match this session. Device-flow sessions are created by /device and exempt.
-    if session.code_challenge_method != "device"
-        && !crate::account::flow_cookie_matches(headers, &session_id)
-    {
+    // Browser binding (login CSRF): the lid_flow cookie set at /authorize or
+    // /device must match this session.
+    if !crate::account::flow_cookie_matches(headers, &session_id) {
         let _ = store::log_audit("social_flow_cookie_mismatch", "", "", provider_id).await;
         return Ok(crate::login::login_page(
             &session_id,

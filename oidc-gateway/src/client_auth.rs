@@ -225,6 +225,20 @@ fn verify_secret(client: &OidcClient, client_secret: Option<&str>) -> Result<(),
             }
             return Err("public client cannot provide client_secret".into());
         }
+        if let Some(expected) = client.token_endpoint_auth_method.as_deref()
+            && expected != "none"
+        {
+            return Err(format!(
+                "client '{}' must use registered token_endpoint_auth_method '{expected}'",
+                client.client_id
+            ));
+        }
+        if client.jwks.is_some() {
+            return Err(format!(
+                "client '{}' must use registered token_endpoint_auth_method 'private_key_jwt'",
+                client.client_id
+            ));
+        }
         Ok(())
     }
 }

@@ -222,25 +222,57 @@ regions via HTTP:
 - Replication is fire-and-forget with logging (does not block the API response)
 - The receiving endpoint does NOT trigger further replication (no infinite loops)
 
-## Key Rotation with CAS
+## Signing Key Rotation
+
+Signing keys are managed by the `key_manager` module inside oidc-gateway
+(`oidc-gateway/src/key_manager.rs`). The key ring is versioned: a CAS-guarded
+metadata pointer (`meta:current` in the `keys` table) names the current
+generation; key material lives in per-version records (`signing-key-v{N}`,
+`signing-key-ec-v{N}`).
+
+Rotation is **manual and per-region** — there is no age-based automatic
+rotation, and rotation is deliberately NOT replicated via
+`/internal/replicate`. Each region is its own OIDC issuer with its own keys, so
+rotate each region independently:
 
 ```
-key-manager handles key rotation via CAS:
-1. get_revision("lid-keys", "signing_keys") → (exported_keys, revision)
-2. Import keys from KV
-3. If current key age >= 24h:
-   a. Generate new RSA-2048 key pair
-   b. Retire old key (48h grace period for verification)
-   c. Export new key store
-   d. swap("lid-keys", "signing_keys", new_export, revision)
-   e. If swap fails → another instance rotated first → go to step 1
-   f. If swap succeeds → log rotation, continue
-4. If no rotation needed → use current keys from KV
+1. Superadmin calls POST /api/keys/rotate against the region
+2. A fresh RSA-2048 + EC P-256 pair is generated as generation N+1
+3. The outgoing pair is retired: it stays in JWKS for verification only,
+   for 4200 seconds (max token lifetime 3600s + 600s skew margin)
+4. The ring metadata pointer is swapped with a CAS; a concurrent rotation
+   loses the race and the API returns 409 Conflict (safe to retry)
+5. New tokens are signed with the new pair immediately; once the grace
+   period elapses, retired keys are dropped from JWKS and their private
+   material is purged
 ```
 
-Each region generates independent signing keys. Tokens always carry the
-issuer URL of the region that created them, so resource servers fetch JWKS
-from the correct region. No key replication is needed.
+Operational notes:
+- `GET /api/keys` (superadmin) lists the ring with per-key `kid`, `alg`,
+  `status` (`current`/`retired`/`expired`), and timestamps.
+- During the grace window JWKS contains current + retired keys (more than 2
+  entries). Resource servers must select verification keys by the JWT header
+  `kid`, never by position or count.
+- Because tokens always carry the issuer URL of the region that created them,
+  resource servers fetch JWKS from the correct region. No key replication is
+  needed — or wanted.
+
+## Operational Endpoints
+
+| Endpoint | Method | Auth | Purpose |
+|----------|--------|------|---------|
+| `/healthz` | GET | — (public) | Liveness probe: `{"ok":true,"status":"healthy"}` |
+| `/readyz` | GET | — (public) | Readiness probe: checks KV stores and signing keys; 200 `ready` or 503 `not_ready` with per-check details |
+| `/version` | GET | — (public) | Build info: `{"name","version","git_sha","build_date","rustc"}` |
+| `/metrics` | GET | Superadmin bearer (open in `dev_mode`) | Metrics stub (Prometheus text format); counters are published via NATS (`lid.metrics`) |
+| `/internal/lookup` | GET | `x-internal-auth` shared secret | Cross-region email-hash existence check (see Data Model) |
+| `/internal/config` | GET | `x-internal-auth` shared secret | Export clients (secrets stripped) + tenants for sync |
+| `/internal/replicate` | POST | `x-internal-auth` shared secret | Receive a tenant/client mutation from a remote region |
+
+All `/internal/*` requests strictly require the `internal_auth_secret` config
+value to be set and presented in the `x-internal-auth` header; a missing secret
+fails closed (500) and a mismatched one returns 401. `/internal/lookup` is
+rate-limited to 60 requests/minute per calling IP.
 
 ## Configuration Reference
 
@@ -269,7 +301,7 @@ from the correct region. No key replication is needed.
 | 7 | oidc-gateway | Cross-region redirect on login miss | `oidc-gateway/src/login.rs` |
 | 8 | oidc-gateway | Replication calls after create/delete tenant, create client | `oidc-gateway/src/management.rs` |
 | 9 | region-authority | Local NATS KV lookup with in-memory cache | `region-authority/src/lib.rs` |
-| 10 | key-manager | Per-region RSA key generation + CAS rotation | `key-manager/src/lib.rs` |
+| 10 | oidc-gateway | Per-region RSA+EC signing keys, CAS-guarded manual rotation | `oidc-gateway/src/key_manager.rs` |
 | 11 | Config | Region config values in wasi:config/store | `deploy/workloaddeployment-{eu,us}.yaml` |
 | 12 | Infrastructure | Region manifests | `deploy/workloaddeployment-{eu,us}.yaml` |
 

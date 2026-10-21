@@ -68,6 +68,7 @@ pub async fn send_request(request: http::Request<String>) -> Result<(u16, Vec<u8
         .map_err(|e| format!("http error: {e:?}"))?
         .map_err(|e| format!("response error: {e:?}"))?;
 
+    const MAX_RESPONSE_BODY_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
     let status = incoming.status();
     let mut body_bytes = Vec::new();
     if let Ok(inc_body) = incoming.consume()
@@ -75,7 +76,12 @@ pub async fn send_request(request: http::Request<String>) -> Result<(u16, Vec<u8
     {
         loop {
             match in_stream.blocking_read(65536) {
-                Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
+                Ok(chunk) if !chunk.is_empty() => {
+                    if body_bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+                        return Err("response body exceeded maximum allowed size".to_string());
+                    }
+                    body_bytes.extend_from_slice(&chunk);
+                }
                 _ => break,
             }
         }

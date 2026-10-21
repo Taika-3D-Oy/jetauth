@@ -23,6 +23,7 @@ mod device;
 mod discovery;
 pub mod dpop;
 mod email;
+pub mod error;
 mod google;
 mod hooks;
 pub mod http_client;
@@ -39,6 +40,7 @@ mod passkeys;
 mod region_authority;
 mod registration;
 mod service_client;
+mod services;
 mod social;
 mod store;
 pub mod theme;
@@ -47,6 +49,7 @@ pub mod totp;
 mod userinfo;
 pub mod util;
 
+use error::ApiError;
 use http::{Method, Response, StatusCode};
 
 fn get_issuer() -> String {
@@ -120,13 +123,18 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
             }
         }
 
-        // Read request body
+        // Read request body (capped at MAX_BODY_SIZE + 1 chunk so read_body rejects oversized payloads)
         let body_bytes = if let Ok(body) = request.consume() {
             if let Ok(stream) = body.stream() {
                 let mut buf = Vec::new();
                 loop {
                     match stream.blocking_read(65536) {
-                        Ok(chunk) if !chunk.is_empty() => buf.extend_from_slice(&chunk),
+                        Ok(chunk) if !chunk.is_empty() => {
+                            buf.extend_from_slice(&chunk);
+                            if buf.len() > MAX_BODY_SIZE {
+                                break;
+                            }
+                        }
                         _ => break,
                     }
                 }
@@ -158,7 +166,7 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
             .unwrap_or_else(|_| http::Request::new(Vec::new()));
 
         let resp = futures::executor::block_on(handle_request(http_req))
-            .unwrap_or_else(|e: String| error_json(StatusCode::INTERNAL_SERVER_ERROR, &e));
+            .unwrap_or_else(|e: ApiError| e.render());
 
         // Build outgoing response
         let mut header_entries: Vec<(String, Vec<u8>)> = Vec::new();
@@ -198,7 +206,7 @@ impl bindings::exports::wasi::http::incoming_handler::Guest for Component {
     }
 }
 
-async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>, String> {
+async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>, ApiError> {
     // Load config values (cached for this request)
     store::init_config().await;
 
@@ -261,19 +269,24 @@ async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>,
 
     let resp = match handle(req, &remote_ip).await {
         Ok(resp) => resp,
-        Err(e) => {
-            logger::warn("http.request.rejected", serde_json::json!({ "error": e }));
+        Err(err) => {
+            // Log the internal detail (if any); the client only ever sees
+            // err.message, which is guaranteed client-safe by construction.
+            logger::warn(
+                "http.request.rejected",
+                serde_json::json!({ "error": err.log_detail(), "status": err.status.as_u16() }),
+            );
             // Don't leak client existence: client-auth failures get a generic
             // invalid_client message; details stay in the server-side log above.
-            let msg = if e.contains("unknown client_id")
-                || e.contains("invalid client_secret")
-                || e.contains("client authentication")
+            let msg = if err.message.contains("unknown client_id")
+                || err.message.contains("invalid client_secret")
+                || err.message.contains("client authentication")
             {
-                "invalid_client".to_string()
+                "invalid_client"
             } else {
-                e
+                err.message.as_str()
             };
-            error_json(StatusCode::BAD_REQUEST, &msg)
+            error_json(err.status, msg)
         }
     };
     logger::finish_request(resp.status().as_u16());
@@ -317,7 +330,7 @@ async fn handle_request(req: http::Request<Vec<u8>>) -> Result<Response<String>,
     Ok(resp)
 }
 
-async fn handle_email_verification(query: &str) -> Result<Response<String>, String> {
+async fn handle_email_verification(query: &str) -> Result<Response<String>, ApiError> {
     let params = util::parse_query(query);
     let token = params
         .iter()
@@ -325,29 +338,43 @@ async fn handle_email_verification(query: &str) -> Result<Response<String>, Stri
         .map(|(_, v)| v)
         .ok_or("missing token")?;
 
-    // Rate limit: 5 attempts per token per hour
-    if let Ok((false, _)) =
-        crate::service_client::check_rate(&format!("verify_email:{}", token), 5, 3600).await
-    {
-        return Err("too many verification attempts. please try again later.".into());
+    // Rate limit: 5 attempts per token per hour.
+    // Fail closed on limiter errors for authentication-critical paths.
+    match crate::service_client::check_rate(&format!("verify_email:{}", token), 5, 3600).await {
+        Ok((false, _)) => {
+            return Err(ApiError::too_many(
+                "too many verification attempts. please try again later.",
+            ));
+        }
+        Err(e) => {
+            logger::error_message("rate_limit.verify_email_check_failed", e);
+            return Err(ApiError::too_many(
+                "too many verification attempts. please try again later.",
+            ));
+        }
+        _ => {}
     }
 
     // Look up verification token (stored as invitation with role "verify_email")
     let inv = match store::get_invitation(token).await {
         Ok(Some(i)) if i.role == "verify_email" && store::unix_now() <= i.expires_at => i,
-        _ => {
+        Ok(_) => {
             logger::warn(
                 "email_verification.invalid_token",
                 serde_json::json!({ "token_hmac": store::hmac_email(token) }),
             );
-            return Err("Verification link is invalid or has expired.".into());
+            return Err(ApiError::bad_request(
+                "Verification link is invalid or has expired.",
+            ));
         }
+        Err(e) => return Err(ApiError::internal(e)),
     };
 
     // Find and activate user
     let user = store::get_user_by_email(&inv.email)
-        .await?
-        .ok_or("user not found")?;
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("user not found"))?;
     if user.status == "pending" {
         store::update_user_rmw(&user.id, |u| {
             if u.status == "pending" {
@@ -357,12 +384,15 @@ async fn handle_email_verification(query: &str) -> Result<Response<String>, Stri
                 Ok(false)
             }
         })
-        .await?;
+        .await
+        .map_err(ApiError::internal)?;
         let _ = store::log_audit("email_verified", &user.id, &user.id, &user.email).await;
     }
 
     // Clean up token
-    store::delete_invitation(token).await?;
+    store::delete_invitation(token)
+        .await
+        .map_err(ApiError::internal)?;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -371,7 +401,10 @@ async fn handle_email_verification(query: &str) -> Result<Response<String>, Stri
         .unwrap())
 }
 
-async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response<String>, String> {
+async fn handle(
+    req: http::Request<Vec<u8>>,
+    remote_ip: &str,
+) -> Result<Response<String>, ApiError> {
     let (parts, body) = req.into_parts();
 
     let full_path = parts
@@ -387,7 +420,7 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
 
     if route_path == "/admin" || route_path.starts_with("/admin/") {
         return Ok(
-            admin::handle_admin_route(&parts.method, route_path, &parts.headers, &body).await,
+            admin::handle_admin_route(&parts.method, full_path, &parts.headers, &body).await,
         );
     }
 
@@ -443,7 +476,7 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
     match (&parts.method, route_path) {
         // ── Health / Readiness ─────────────────────────────
         (&Method::GET, "/healthz") => Ok(healthz()),
-        (&Method::GET, "/readyz") => readyz(auth).await,
+        (&Method::GET, "/readyz") => readyz(auth).await.map_err(ApiError::from),
         (&Method::GET, "/metrics") => handle_metrics(auth).await,
         (&Method::GET, "/verify/email") => handle_email_verification(query).await,
 
@@ -462,11 +495,15 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         | (&Method::POST, "/oauth/par")
         | (&Method::POST, "/as/par") => {
             let body_bytes = read_body(body).await?;
-            par::handle_par(&body_bytes, &issuer, auth).await
+            par::handle_par(&body_bytes, &issuer, auth)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── OIDC flow ───────────────────────────────────────
-        (&Method::GET, "/authorize") => authorize::handle(query, &issuer, &parts.headers).await,
+        (&Method::GET, "/authorize") => authorize::handle(query, &issuer, &parts.headers)
+            .await
+            .map_err(ApiError::from),
 
         (&Method::GET, "/login") => {
             let params = util::parse_query(query);
@@ -478,25 +515,12 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
                 }
                 Ok(login::login_page(session_id, None).await)
             } else {
-                let return_to_raw = params
-                    .iter()
-                    .find(|(k, _)| k == "return_to")
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("/admin");
-                let return_to = if return_to_raw.starts_with('/')
-                    && !return_to_raw.starts_with("//")
-                    && !return_to_raw.starts_with("/\\")
-                {
-                    return_to_raw
-                } else {
-                    "/admin"
-                };
+                // PKCE is required for all clients, and the lid-admin code
+                // exchange + session establishment lives in the admin module —
+                // hand off to /admin/login, which runs the full S256 flow.
                 Ok(Response::builder()
                     .status(StatusCode::SEE_OTHER)
-                    .header(
-                        "location",
-                        format!("/authorize?client_id=lid-admin&redirect_uri={}&response_type=code&scope=openid+email+profile&state=direct_login", util::percent_encode(return_to)),
-                    )
+                    .header("location", "/admin/login")
                     .body(String::new())
                     .unwrap())
             }
@@ -504,28 +528,61 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
 
         (&Method::POST, "/login") => {
             let body_bytes = read_body(body).await?;
-            login::handle_login(&body_bytes, remote_ip, &parts.headers).await
+            login::handle_login(&body_bytes, remote_ip, &parts.headers)
+                .await
+                .map_err(ApiError::from)
         }
 
         (&Method::POST, "/login/mfa") => {
             let body_bytes = read_body(body).await?;
-            login::handle_mfa(&body_bytes, remote_ip, &parts.headers).await
+            login::handle_mfa(&body_bytes, remote_ip, &parts.headers)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── Consent screen (third-party clients / prompt=consent) ────
+        (&Method::GET, "/consent") => {
+            let params = util::parse_query(query);
+            let code = util::form_value(&params, "code").ok_or("missing code")?;
+            if !account::flow_cookie_matches(&parts.headers, code) {
+                return Err("invalid or expired authorisation flow".into());
+            }
+            let auth_code = store::get_auth_code(code)
+                .await
+                .map_err(ApiError::internal)?
+                .ok_or("invalid or expired authorisation code")?;
+            if store::unix_now() > auth_code.expires_at || !auth_code.pending_consent {
+                return Err("invalid or expired authorisation code".into());
+            }
+            let client = store::get_client(&auth_code.client_id)
+                .await
+                .map_err(ApiError::internal)?
+                .unwrap_or_default();
+            let user = store::get_user(&auth_code.user_id)
+                .await
+                .map_err(ApiError::internal)?
+                .ok_or("user not found")?;
+            Ok(login::consent_page(code, &auth_code, &client, &user).await)
+        }
         (&Method::POST, "/consent") => {
             let body_bytes = read_body(body).await?;
-            login::handle_consent(&body_bytes, &parts.headers).await
+            login::handle_consent(&body_bytes, &parts.headers)
+                .await
+                .map_err(ApiError::from)
         }
 
         (&Method::POST, "/token") => {
             let body_bytes = read_body(body).await?;
-            token::handle(&body_bytes, &issuer, auth, dpop).await
+            token::handle(&body_bytes, &issuer, auth, dpop)
+                .await
+                .map_err(ApiError::from)
         }
 
         (&Method::POST, "/token/introspect") => {
             let body_bytes = read_body(body).await?;
-            token::handle_introspect(&body_bytes, &issuer, auth).await
+            token::handle_introspect(&body_bytes, &issuer, auth)
+                .await
+                .map_err(ApiError::from)
         }
 
         (&Method::GET, "/userinfo") | (&Method::POST, "/userinfo") => {
@@ -534,16 +591,22 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
             } else {
                 Vec::new()
             };
-            userinfo::handle(auth, dpop, &issuer, parts.method.as_str(), &body_bytes).await
+            userinfo::handle(auth, dpop, &issuer, parts.method.as_str(), &body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── Logout ──────────────────────────────────────────
-        (&Method::GET, "/logout") => handle_logout(query, auth, &parts.headers).await,
+        (&Method::GET, "/logout") => handle_logout(query, auth, &parts.headers)
+            .await
+            .map_err(ApiError::from),
 
         // ── Token revocation ────────────────────────────────
         (&Method::POST, "/token/revoke") => {
             let body_bytes = read_body(body).await?;
-            token::handle_revoke(&body_bytes, &issuer, auth).await
+            token::handle_revoke(&body_bytes, &issuer, auth)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── User registration ───────────────────────────────
@@ -559,14 +622,20 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         }
 
         // ── Social login ────────────────────────────────────
-        (&Method::GET, "/auth/google") => google::start(query, &issuer).await,
+        (&Method::GET, "/auth/google") => {
+            google::start(query, &issuer).await.map_err(ApiError::from)
+        }
         (&Method::GET, "/auth/google/callback") => {
-            google::callback(query, &issuer, remote_ip, &parts.headers).await
+            google::callback(query, &issuer, remote_ip, &parts.headers)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── Generic OIDC federation (/auth/social/{provider_id}) ────
         (&Method::GET, p) if p.starts_with("/auth/social/") && !p[13..].contains('/') => {
-            social::start(&p[13..], query, &issuer).await
+            social::start(&p[13..], query, &issuer)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::GET, p) if p.starts_with("/auth/social/") && p.ends_with("/callback") => {
             social::callback(
@@ -577,17 +646,23 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
                 &parts.headers,
             )
             .await
+            .map_err(ApiError::from)
         }
 
         // ── Device Authorization Grant (RFC 8628) ───────────
         (&Method::POST, "/device_authorization") => {
             let body_bytes = read_body(body).await?;
-            device::start(&body_bytes, &issuer).await
+            device::start(&body_bytes, &issuer, auth)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::GET, "/device") => Ok(device::page(query).await),
+        (&Method::GET, "/device/confirm") => Ok(device::confirm_view(query).await),
         (&Method::POST, "/device") => {
             let body_bytes = read_body(body).await?;
-            device::submit(&body_bytes, &issuer).await
+            device::submit(&body_bytes, &issuer)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::GET, "/device/complete") => Ok(device::complete(query).await),
 
@@ -599,27 +674,44 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         }
 
         // ── Account self-service (cookie-based auth) ────────
-        (&Method::GET, "/account") => account::dashboard(&parts.headers).await,
-        (&Method::GET, "/account/passkeys") => {
-            account::passkeys_page(&parts.headers, None, None).await
-        }
+        (&Method::GET, "/account") => account::dashboard(&parts.headers)
+            .await
+            .map_err(ApiError::from),
+        (&Method::GET, "/account/passkeys") => account::passkeys_page(&parts.headers, None, None)
+            .await
+            .map_err(ApiError::from),
         (&Method::POST, "/account/passkeys/register") => {
             let body_bytes = read_body(body).await?;
-            account::passkeys_register(&parts.headers, &body_bytes).await
+            account::passkeys_register(&parts.headers, &body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::POST, "/account/passkeys/delete") => {
             let body_bytes = read_body(body).await?;
-            account::passkeys_delete(&parts.headers, &body_bytes).await
+            account::passkeys_delete(&parts.headers, &body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
-        (&Method::GET, "/account/mfa") => account::mfa_page(&parts.headers, None, None).await,
-        (&Method::POST, "/account/mfa/setup") => account::mfa_setup(&parts.headers).await,
+        (&Method::GET, "/account/mfa") => account::mfa_page(&parts.headers, None, None)
+            .await
+            .map_err(ApiError::from),
+        (&Method::POST, "/account/mfa/setup") => {
+            let body_bytes = read_body(body).await?;
+            account::mfa_setup(&parts.headers, &body_bytes)
+                .await
+                .map_err(ApiError::from)
+        }
         (&Method::POST, "/account/mfa/confirm") => {
             let body_bytes = read_body(body).await?;
-            account::mfa_confirm(&parts.headers, &body_bytes).await
+            account::mfa_confirm(&parts.headers, &body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::POST, "/account/mfa/disable") => {
             let body_bytes = read_body(body).await?;
-            account::mfa_disable(&parts.headers, &body_bytes).await
+            account::mfa_disable(&parts.headers, &body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::GET, "/account/logout") => Ok(account::logout(&parts.headers).await),
 
@@ -638,16 +730,18 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
                     "lookup rate limit exceeded",
                 ));
             }
-            handle_internal_lookup(query).await
+            handle_internal_lookup(query).await.map_err(ApiError::from)
         }
         (&Method::GET, "/internal/config") => {
             verify_internal_auth(&parts.headers)?;
-            handle_internal_config().await
+            handle_internal_config().await.map_err(ApiError::from)
         }
         (&Method::POST, "/internal/replicate") => {
             verify_internal_auth(&parts.headers)?;
             let body_bytes = read_body(body).await?;
-            handle_internal_replicate(&body_bytes).await
+            handle_internal_replicate(&body_bytes)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── Bootstrap status (public, no auth) ─────────────
@@ -675,37 +769,47 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
         }
         (&Method::POST, "/api/invitations/accept") => {
             let body_bytes = read_body(body).await?;
-            management::accept_invitation(&body_bytes).await
+            management::accept_invitation(auth, &parts.headers, &body_bytes).await
         }
         (&Method::GET, "/api/settings") => management::get_settings(auth).await,
         (&Method::PUT, "/api/settings") => {
             let body_bytes = read_body(body).await?;
             management::update_settings(auth, &body_bytes).await
         }
+        (&Method::GET, "/api/users") => management::list_users(auth, query).await,
+        (&Method::GET, "/api/stats") => management::stats(auth).await,
 
         // ── Dynamic Client Registration (RFC 7591 / RFC 7592) ──
         (&Method::POST, "/connect/register") | (&Method::POST, "/oauth/register") => {
             let body_bytes = read_body(body).await?;
-            registration::register_client(auth, &body_bytes, &issuer).await
+            registration::register_client(auth, &body_bytes, &issuer)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::GET, p)
             if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
         {
             let id = p.rsplit('/').next().unwrap_or("");
-            registration::read_client(auth, id, &issuer).await
+            registration::read_client(auth, id, &issuer)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::PUT, p)
             if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
         {
             let id = p.rsplit('/').next().unwrap_or("");
             let body_bytes = read_body(body).await?;
-            registration::update_client(auth, id, &body_bytes, &issuer).await
+            registration::update_client(auth, id, &body_bytes, &issuer)
+                .await
+                .map_err(ApiError::from)
         }
         (&Method::DELETE, p)
             if p.starts_with("/connect/register/") || p.starts_with("/oauth/register/") =>
         {
             let id = p.rsplit('/').next().unwrap_or("");
-            registration::delete_client(auth, id).await
+            registration::delete_client(auth, id)
+                .await
+                .map_err(ApiError::from)
         }
 
         // ── CORS preflight ──────────────────────────────────
@@ -724,9 +828,9 @@ async fn handle(req: http::Request<Vec<u8>>, remote_ip: &str) -> Result<Response
 
 /// Verify the shared secret on `/internal/*` requests.
 /// All `/internal/*` requests strictly require `internal_auth_secret` to be configured and matched.
-fn verify_internal_auth(headers: &http::HeaderMap) -> Result<(), String> {
+fn verify_internal_auth(headers: &http::HeaderMap) -> Result<(), ApiError> {
     let Some(expected) = store::internal_auth_secret().filter(|s| !s.trim().is_empty()) else {
-        return Err("internal_auth_secret is not configured".into());
+        return Err(ApiError::internal("internal_auth_secret is not configured"));
     };
     let provided = headers
         .get("x-internal-auth")
@@ -737,7 +841,7 @@ fn verify_internal_auth(headers: &http::HeaderMap) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
-        Err("unauthorized internal request".into())
+        Err(ApiError::unauthorized("unauthorized internal request"))
     }
 }
 
@@ -850,12 +954,14 @@ async fn route_api(
     path: &str,
     auth: Option<&str>,
     body: &[u8],
-) -> Result<Response<String>, String> {
+) -> Result<Response<String>, ApiError> {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
     match (method, segments.as_slice()) {
         // GET /api/tenants/:id
         (&Method::GET, ["api", "tenants", id]) => management::get_tenant(auth, id).await,
+        // PATCH /api/tenants/:id
+        (&Method::PATCH, ["api", "tenants", id]) => management::update_tenant(auth, id, body).await,
         // DELETE /api/tenants/:id
         (&Method::DELETE, ["api", "tenants", id]) => management::delete_tenant(auth, id).await,
         // GET /api/tenants/:id/users
@@ -877,6 +983,10 @@ async fn route_api(
         // POST /api/users/:id/password-reset
         (&Method::POST, ["api", "users", id, "password-reset"]) => {
             management::initiate_password_reset(auth, id).await
+        }
+        // POST /api/users/:id/activate
+        (&Method::POST, ["api", "users", id, "activate"]) => {
+            management::activate_user(auth, id).await
         }
         // GET /api/users/:id/export — GDPR data export
         (&Method::GET, ["api", "users", id, "export"]) => {
@@ -924,10 +1034,23 @@ async fn route_api(
         (&Method::DELETE, ["api", "identity-providers", id]) => {
             management::delete_identity_provider(auth, id).await
         }
+        // PUT /api/identity-providers/:id
+        (&Method::PUT, ["api", "identity-providers", id]) => {
+            management::update_identity_provider(auth, id, body).await
+        }
         // ── Clients (dynamic) ───────────────────────────────
         (&Method::GET, ["api", "clients", id]) => management::get_client(auth, id).await,
         (&Method::PUT, ["api", "clients", id]) => management::update_client(auth, id, body).await,
         (&Method::DELETE, ["api", "clients", id]) => management::delete_client(auth, id).await,
+        // POST /api/clients/:id/rotate-secret
+        (&Method::POST, ["api", "clients", id, "rotate-secret"]) => {
+            management::rotate_client_secret(auth, id).await
+        }
+        // ── Signing key management ─────────────────────────────
+        // GET /api/keys
+        (&Method::GET, ["api", "keys"]) => management::list_keys(auth).await,
+        // POST /api/keys/rotate
+        (&Method::POST, ["api", "keys", "rotate"]) => management::rotate_keys(auth).await,
         // ── Hooks ──────────────────────────────────────────────
         (&Method::GET, ["api", "hooks"]) => management::list_hooks(auth).await,
         // POST /api/hooks
@@ -946,7 +1069,7 @@ async fn route_api(
     }
 }
 
-async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<String>, String> {
+async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<String>, ApiError> {
     #[derive(serde::Deserialize)]
     struct RegisterReq {
         email: String,
@@ -974,12 +1097,16 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
     .await
     {
         Ok((false, _)) => {
-            return Err("too many registration attempts. please try again later.".into());
+            return Err(ApiError::too_many(
+                "too many registration attempts. please try again later.",
+            ));
         }
         Err(e) => {
             // Fail closed on limiter errors for authentication-critical paths.
             logger::error_message("rate_limit.register_email_check_failed", e);
-            return Err("too many registration attempts. please try again later.".into());
+            return Err(ApiError::too_many(
+                "too many registration attempts. please try again later.",
+            ));
         }
         _ => {}
     }
@@ -988,11 +1115,15 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
             .await
         {
             Ok((false, _)) => {
-                return Err("too many registration attempts. please try again later.".into());
+                return Err(ApiError::too_many(
+                    "too many registration attempts. please try again later.",
+                ));
             }
             Err(e) => {
                 logger::error_message("rate_limit.register_ip_check_failed", e);
-                return Err("too many registration attempts. please try again later.".into());
+                return Err(ApiError::too_many(
+                    "too many registration attempts. please try again later.",
+                ));
             }
             _ => {}
         }
@@ -1023,7 +1154,9 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
     }
 
     // Hash password via password-hasher
-    let password_hash = service_client::hash_password(&req.password).await?;
+    let password_hash = service_client::hash_password(&req.password)
+        .await
+        .map_err(ApiError::internal)?;
 
     let initial_status = if require_email_verification() {
         "pending"
@@ -1045,8 +1178,10 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
         passkey_credentials: Vec::new(),
     };
 
+    let mut send_verification = false;
     match store::create_user(&user).await {
         Ok(_) => {
+            send_verification = true;
             let _ = store::log_audit("user_registered", &user.id, &user.id, &user.email).await;
 
             // Bootstrap hook: config-supplied Rhai script for zero-credential setup
@@ -1062,7 +1197,7 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
                 .await;
                 // A deny must not leave the committed user record behind.
                 let _ = store::delete_user(&user.id).await;
-                return Err(format!("registration denied: {reason}"));
+                return Err(format!("registration denied: {reason}").into());
             }
             if let Err(e) = hooks::apply_outcome(&mut user_mut, &boot).await {
                 logger::error_message("bootstrap_hook.apply_failed", e);
@@ -1091,7 +1226,7 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
                 .await;
                 // A deny must not leave the committed user record behind.
                 let _ = store::delete_user(&user.id).await;
-                return Err(format!("registration denied: {reason}"));
+                return Err(format!("registration denied: {reason}").into());
             }
             if let Err(e) = hooks::apply_outcome(&mut user_mut, &outcome).await {
                 logger::error_message("hooks.apply_failed", e);
@@ -1103,12 +1238,18 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
                 "user_registration.duplicate_email",
                 serde_json::json!({ "email": user.email }),
             );
+            // Only resend verification email if the existing account is still pending (F-13).
+            if let Ok(Some(existing)) = store::get_user_by_email(&user.email).await
+                && existing.status == "pending"
+            {
+                send_verification = true;
+            }
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(ApiError::internal(e)),
     }
 
     // Email verification flow: generate and send token when verification is required
-    if require_email_verification() {
+    if require_email_verification() && send_verification {
         let verify_token = store::random_hex(32);
         let verify_inv = store::Invitation {
             tenant_id: "system".to_string(),
@@ -1118,7 +1259,9 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
             invited_by: "system".to_string(),
             expires_at: store::unix_now() + 86400, // 24 hours
         };
-        store::save_invitation(&verify_inv).await?;
+        store::save_invitation(&verify_inv)
+            .await
+            .map_err(ApiError::internal)?;
         let _ = store::log_audit(
             "email_verification_link_generated",
             &user.id,
@@ -1147,7 +1290,7 @@ async fn handle_register(body_bytes: &[u8], remote_ip: &str) -> Result<Response<
         .unwrap())
 }
 
-async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<String>, String> {
+async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<String>, ApiError> {
     #[derive(serde::Deserialize)]
     struct ResetReq {
         token: String,
@@ -1160,11 +1303,17 @@ async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<St
     // Rate limit reset: 5 attempts per 15 mins per token
     match crate::service_client::check_rate(&format!("reset_complete:{}", req.token), 5, 900).await
     {
-        Ok((false, _)) => return Err("too many reset attempts. please try again later.".into()),
+        Ok((false, _)) => {
+            return Err(ApiError::too_many(
+                "too many reset attempts. please try again later.",
+            ));
+        }
         Err(e) => {
             // Fail closed on limiter errors for authentication-critical paths.
             logger::error_message("rate_limit.password_reset_check_failed", e);
-            return Err("too many reset attempts. please try again later.".into());
+            return Err(ApiError::too_many(
+                "too many reset attempts. please try again later.",
+            ));
         }
         _ => {}
     }
@@ -1203,19 +1352,25 @@ async fn handle_password_reset_complete(body_bytes: &[u8]) -> Result<Response<St
 
     // Find user by email
     let user = store::get_user_by_email(&inv.email)
-        .await?
-        .ok_or("user not found")?;
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("user not found"))?;
 
     // Hash new password and update user atomically
-    let new_hash = service_client::hash_password(&req.new_password).await?;
+    let new_hash = service_client::hash_password(&req.new_password)
+        .await
+        .map_err(ApiError::internal)?;
     store::update_user_rmw(&user.id, |u| {
         u.password_hash = new_hash.clone();
         Ok(true)
     })
-    .await?;
+    .await
+    .map_err(ApiError::internal)?;
 
     // Clean up token
-    store::delete_invitation(&req.token).await?;
+    store::delete_invitation(&req.token)
+        .await
+        .map_err(ApiError::internal)?;
 
     // Revoke all refresh tokens for this user
     if let Err(e) = store::delete_user_refresh_tokens(&user.id).await {
@@ -1277,18 +1432,26 @@ async fn handle_logout(
     if let Some(token) = token
         && let Ok(claims) =
             service_client::verify_token_scoped(token, Some(&get_issuer()), None, None).await
-        && let Some(sub) = claims.get("sub").and_then(|v| v.as_str())
     {
-        hinted_client_id = claims
-            .get("aud")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let sid = claims.get("sid").and_then(|v| v.as_str());
-        // Backchannel logout: notify clients before revoking tokens
-        backchannel::notify_all_clients(sub, &get_issuer(), sid).await;
-        // Revoke all refresh tokens for this user
-        let _ = store::delete_user_refresh_tokens(sub).await;
-        let _ = store::log_audit("logout", sub, sub, "").await;
+        // RP-Initiated Logout 1.0: the hint must be an ID token. Any token
+        // carrying a `token_type` claim (e.g. "access", "client_credentials")
+        // is not an ID token and must never establish identity here —
+        // otherwise anyone holding a user's access token could revoke ALL of
+        // that user's refresh tokens and fan out backchannel logout.
+        // (Matches the stricter validate_id_token_hint pattern in authorize.rs.)
+        let is_id_token = claims.get("token_type").is_none();
+        if is_id_token && let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
+            hinted_client_id = claims
+                .get("aud")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let sid = claims.get("sid").and_then(|v| v.as_str());
+            // Backchannel logout: notify clients before revoking tokens
+            backchannel::notify_all_clients(sub, &get_issuer(), sid).await;
+            // Revoke all refresh tokens for this user
+            let _ = store::delete_user_refresh_tokens(sub).await;
+            let _ = store::log_audit("logout", sub, sub, "").await;
+        }
     }
 
     // Delete server-side IdP and account sessions
@@ -1401,7 +1564,7 @@ fn version_response() -> Response<String> {
         .unwrap()
 }
 
-async fn handle_metrics(auth: Option<&str>) -> Result<Response<String>, String> {
+async fn handle_metrics(auth: Option<&str>) -> Result<Response<String>, ApiError> {
     if !is_dev_mode() {
         let claims = management::require_auth(auth).await?;
         management::require_superadmin(&claims)?;
@@ -1605,11 +1768,11 @@ async fn with_cors_and_security(
     }
     parts.headers.insert(
         "access-control-allow-methods",
-        "GET, POST, PUT, DELETE, OPTIONS".parse().unwrap(),
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS".parse().unwrap(),
     );
     parts.headers.insert(
         "access-control-allow-headers",
-        "authorization, content-type, traceparent, x-request-id, x-lid-consistency"
+        "authorization, content-type, dpop, traceparent, x-request-id, x-lid-consistency"
             .parse()
             .unwrap(),
     );

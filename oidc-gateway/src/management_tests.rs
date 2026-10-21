@@ -90,4 +90,71 @@ mod tests {
         let target_role_owner = "owner";
         assert!(role_level(target_role_owner) > role_level(admin_role));
     }
+
+    #[test]
+    fn test_require_superadmin_status() {
+        use http::StatusCode;
+        let member = mock_claims("member", Some("t1"));
+        let err = require_superadmin(&member).unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(err.message.contains("forbidden"));
+        assert!(require_superadmin(&mock_claims("superadmin", None)).is_ok());
+    }
+
+    #[test]
+    fn test_require_tenant_role_status() {
+        use http::StatusCode;
+        let manager_t1 = mock_claims("manager", Some("t1"));
+        // Sufficient role passes
+        assert!(require_tenant_role(&manager_t1, "t1", "manager").is_ok());
+        // Wrong tenant → 403
+        let err = require_tenant_role(&manager_t1, "t2", "member").unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        // Insufficient role → 403
+        let err = require_tenant_role(&manager_t1, "t1", "admin").unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_require_self_or_superadmin_status() {
+        use http::StatusCode;
+        // Self passes
+        assert!(require_self_or_superadmin(&mock_claims("member", None), "user123").is_ok());
+        // Superadmin passes for any user
+        assert!(require_self_or_superadmin(&mock_claims("superadmin", None), "other").is_ok());
+        // Other user, non-superadmin → 403
+        let err = require_self_or_superadmin(&mock_claims("member", None), "other").unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_api_error_mapping() {
+        use crate::error::ApiError;
+        use http::StatusCode;
+
+        // Legacy string errors keep their historic 400 behavior
+        let err = ApiError::from("bad input");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        let err = ApiError::from(String::from("bad input"));
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        // internal() hides the detail from the rendered response body
+        let err = ApiError::internal("kv store tcp connection refused");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.log_detail(), "kv store tcp connection refused");
+        let resp = err.render();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!resp.body().contains("kv store tcp connection refused"));
+        assert!(resp.body().contains("internal error"));
+
+        // Constructor statuses
+        assert_eq!(ApiError::unauthorized("x").status, StatusCode::UNAUTHORIZED);
+        assert_eq!(ApiError::forbidden("x").status, StatusCode::FORBIDDEN);
+        assert_eq!(ApiError::not_found("x").status, StatusCode::NOT_FOUND);
+        assert_eq!(ApiError::conflict("x").status, StatusCode::CONFLICT);
+        assert_eq!(
+            ApiError::too_many("x").status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
 }

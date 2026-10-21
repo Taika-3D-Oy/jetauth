@@ -169,8 +169,8 @@ pub async fn render_tenant_detail_page(
                     label for="invite-role" { "Role" }
                     select id="invite-role" name="role" {
                         option value="member" { "Member" }
+                        option value="manager" { "Manager" }
                         option value="admin" { "Admin" }
-                        option value="owner" { "Owner" }
                     }
                 }
                 button type="submit" class="btn btn-primary" style="height: 38px;" { "Send Invite" }

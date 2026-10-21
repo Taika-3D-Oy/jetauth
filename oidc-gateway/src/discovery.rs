@@ -107,6 +107,8 @@ pub fn oauth_authorization_server(issuer: &str) -> Response<String> {
 }
 
 /// GET /.well-known/jwks.json — fetches JWKS from key-manager.
+/// Contains the current RSA+EC signing keys plus any retired keys still
+/// within the verification grace period (see key_manager::RETIRED_GRACE_SECS).
 pub async fn jwks() -> Response<String> {
     match crate::service_client::get_jwks().await {
         Ok(jwks) => Response::builder()

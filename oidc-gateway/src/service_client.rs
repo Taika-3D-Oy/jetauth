@@ -119,6 +119,7 @@ pub async fn increment_metric(name: &str, labels: &[(&str, &str)]) -> Result<(),
 /// Cross-region lookup: first check local region via authority component,
 /// then query remote regions via HTTP if not found.
 /// Returns `Some(region_id)` if found, `None` otherwise.
+#[allow(dead_code)]
 pub async fn lookup_region(email_hash: &str) -> Result<Option<String>, String> {
     let cache_key = format!("region:{}", email_hash);
 
@@ -175,6 +176,7 @@ pub async fn lookup_region(email_hash: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 struct LookupReply {
     found: bool,
@@ -182,6 +184,7 @@ struct LookupReply {
 }
 
 /// HTTP GET for cross-region internal calls.
+#[allow(dead_code)]
 async fn internal_http_get(url: &str) -> Result<Vec<u8>, String> {
     let mut headers = vec![("accept", "application/json")];
     let secret_owned;

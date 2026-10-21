@@ -53,3 +53,18 @@ kubectl get pods -l app.kubernetes.io/name=jetauth
 curl https://auth.example.com/healthz
 curl https://auth.example.com/.well-known/openid-configuration
 ```
+
+---
+
+## Client IP / X-Forwarded-For (`trust_xff`)
+
+JetAuth derives the client IP (used for logging and IP-based rate limits) from
+the **last** `X-Forwarded-For` entry, but only when the deployment config value
+`trust_xff` is set to `"true"` or `"1"`. The default is **untrusted**: the
+header is ignored and the client IP is reported as `unknown` (IP-based rate
+limits are then skipped for that request).
+
+Enable `trust_xff` **only** when your ingress/reverse proxy strips or
+unconditionally overwrites the inbound `X-Forwarded-For` header. If clients can
+reach the gateway with a self-supplied XFF header while `trust_xff` is enabled,
+they can spoof their source IP and bypass IP-based rate limits.

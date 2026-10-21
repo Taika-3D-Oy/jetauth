@@ -30,17 +30,9 @@ pub async fn sign(claims: &serde_json::Value) -> Result<String, String> {
 
 /// Sign a set of claims as an ES256 JWT using the imported key-manager.
 pub async fn sign_es256(claims: &serde_json::Value) -> Result<String, String> {
-    // Fetch the EC kid from the JWKS (second key in the array)
-    let keys_json = crate::key_manager::get_public_keys().await?;
-    let keys: Vec<serde_json::Value> =
-        serde_json::from_str(&keys_json).map_err(|e| format!("parse keys: {e}"))?;
-    let ec_kid = keys
-        .iter()
-        .find(|k| k.get("kty").and_then(|v| v.as_str()) == Some("EC"))
-        .and_then(|k| k.get("kid"))
-        .and_then(|v| v.as_str())
-        .ok_or("no EC key found")?
-        .to_string();
+    // Current EC kid from the key ring — retired EC keys in the JWKS must
+    // never be selected for signing.
+    let ec_kid = crate::key_manager::get_ec_kid().await?;
 
     let header = serde_json::json!({
         "alg": "ES256",

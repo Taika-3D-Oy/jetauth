@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.11] - 2026-10-21
+
+### Breaking Changes
+
+- **Management API error semantics corrected**: management endpoints now return typed errors with proper HTTP statuses instead of blanket 400s — missing/invalid Bearer token → `401`, insufficient role → `403`, missing resources (tenant, user, client, hook, identity provider, membership, passkey) → `404`, conflicting state (already a member, MFA already enabled, passkey already registered, concurrent key rotation) → `409`, rate limits → `429`, and store outages → `500` with a generic body (internal detail is log-only). Validation errors remain `400`. Exception: `POST /api/invitations/accept` deliberately keeps `400` for unknown/expired tokens (token-oracle avoidance).
+- **PKCE (S256) required for all authorization-code clients** (OAuth 2.1): confidential clients are no longer exempt; `/authorize` rejects requests without `code_challenge`, and codes issued without one are refused at `/token`.
+- **Refresh tokens now require the `offline_access` scope** for all clients — client confidentiality no longer implies refresh access.
+- **`/device_authorization` requires client authentication for confidential clients**, and the device flow now has an explicit user confirmation screen (`/device/confirm`) — authentication alone no longer approves a device.
+- **`/logout` only accepts ID tokens as `id_token_hint`**: access tokens no longer trigger session revocation or backchannel logout fan-out.
+- **Duplicate OAuth parameters are rejected** with 400 on `/authorize` and the token endpoints (RFC 6749 §3.2).
+- **The built-in `lid-admin` client is now a public client** (`token_endpoint_auth_method: none` + PKCE); existing deployments that stored the broken confidential shape are repaired automatically at startup.
+
+### Added
+
+- **Shared service layer (`services/`)**: the management API and the server-rendered admin panel now run every mutation through one shared service layer (`oidc-gateway/src/services/`), so admin-panel operations perform the same validation, audit logging, and cross-region replication as the REST API. This fixes a multi-region drift bug where tenant/client changes made in the admin panel never replicated to other regions.
+- **New management endpoints**:
+  - `PATCH /api/tenants/:id` — update `display_name` and/or `status` (`active`/`suspended`); replicated cross-region; audited as `tenant_updated`.
+  - `PUT /api/identity-providers/:id` — update client credentials, `enabled`, `display_name`, `discovery_url`; empty `client_id`/`client_secret` leave stored values unchanged, empty `display_name`/`discovery_url` clear them; `client_secret` is never echoed. Audited as `identity_provider_updated`.
+  - `POST /api/clients/:id/rotate-secret` — rotate a confidential client's secret (raw value returned once); public clients (`token_endpoint_auth_method: none`, including `lid-admin`) are rejected with 400.
+  - `POST /api/users/:id/activate` — superadmin-only activation of `pending` accounts (e.g. lost verification email); audited as `user_activated_by_admin`.
+  - `GET /api/users?q=&limit=` — superadmin global user list with case-insensitive email/name substring filter (limit default 100, max 500).
+  - `GET /api/stats` — superadmin aggregate counts (`tenants`, `users`, `clients`, `identity_providers`; deliberately no `active_sessions`).
+- **Extended runtime settings**: `PUT /api/settings` now also accepts `default_theme` (validated against the known theme presets) and `idp_session_ttl_seconds` (300–7776000, i.e. 5 minutes to 90 days); `GET /api/settings` returns the full settings model.
+- **Microsoft as a social IdP**: `provider_type` now accepts `microsoft` in addition to `google` and `github` (generic OIDC federation path).
+- **CORS**: `PATCH` added to `access-control-allow-methods`.
+- **Signing-key rotation**: new superadmin endpoints `GET /api/keys` (list the key ring with per-key status) and `POST /api/keys/rotate` (CAS-guarded rotation; retired keys stay in JWKS for a 4200-second grace period). Verifiers must select JWKS keys by `kid` — the document may contain more than 2 keys during the grace window.
+- **RFC 7592 client configuration endpoints** are now documented in `openapi.yaml` (`GET`/`PUT`/`DELETE /connect/register/{client_id}` and `/oauth/register/{client_id}`), alongside corrected management API response statuses.
+- **New config `trust_xff`**: the `X-Forwarded-For` header is ignored unless `trust_xff=true`; enable it only behind an ingress that strips or sets XFF.
+
+### Changed
+
+- **Unified role sets and ID prefixes across admin panel and API**: role validation (`owner`/`admin`/`manager`/`member` assignable; `owner` never invitable) and generated ID prefixes (`tenant_…`, `client_…`, `idp_…`, `hook_…`, alphanumeric bodies) are now identical on both surfaces.
+- **Admin tenant invitation flow**: inviting a member from the admin panel now creates an invitation and sends the invitation email (roles admin/manager/member) instead of silently direct-adding by email.
+
 ## [2.0.0-rc.4] - 2026-09-29
 
 ### Security Hardening (Full Codebase Audit)

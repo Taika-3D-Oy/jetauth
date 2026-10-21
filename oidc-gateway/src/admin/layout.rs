@@ -69,7 +69,10 @@ pub fn render_layout(
                     div class="user-avatar" title=(session.user.email) { (initial) }
                     span style="font-size:13px; font-weight:500;" { (user_name) }
 
-                    a href="/admin/logout" class="topbar-btn" style="text-decoration:none;" { "Sign out" }
+                    form method="POST" action="/admin/logout" style="display:inline;margin:0;" {
+                        input type="hidden" name="csrf_token" value=(session.csrf_token);
+                        button type="submit" class="topbar-btn" { "Sign out" }
+                    }
                 }
 
                 // ── Sidebar ──

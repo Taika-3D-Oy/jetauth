@@ -49,6 +49,20 @@ pub fn parse_form(body: &[u8]) -> Vec<(String, String)> {
     parse_query(s)
 }
 
+/// Reject duplicate parameter keys (RFC 6749 §3.2: request parameters MUST
+/// NOT appear more than once). Use on OAuth protocol surfaces (authorize
+/// query, token form); the lenient parsers above keep first-value semantics
+/// for non-protocol consumers.
+pub fn check_no_duplicates(params: &[(String, String)]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::with_capacity(params.len());
+    for (key, _) in params {
+        if !seen.insert(key.as_str()) {
+            return Err(format!("duplicate parameter: {key}"));
+        }
+    }
+    Ok(())
+}
+
 /// Look up a value in a parsed form/query.
 pub fn form_value<'a>(form: &'a [(String, String)], key: &str) -> Option<&'a str> {
     form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
@@ -172,13 +186,24 @@ pub fn is_safe_external_url(url: &str) -> Result<(), String> {
         host_port
     };
 
-    let host_lower = host.to_lowercase();
+    let host_lower = host.trim_end_matches('.').to_lowercase();
+    if host_lower.is_empty() {
+        return Err("missing host in URL".into());
+    }
 
-    // Check prohibited hostnames
-    if host_lower == "localhost"
+    // Check prohibited hostnames, single-label internal DNS names, Kubernetes
+    // service suffixes, and wildcard DNS rebinding domains (OIDC-10).
+    let is_single_label = !host_lower.contains('.') && !host_lower.contains(':');
+    if is_single_label
+        || host_lower == "localhost"
         || host_lower.ends_with(".localhost")
         || host_lower.ends_with(".local")
         || host_lower.ends_with(".internal")
+        || host_lower.ends_with(".svc")
+        || host_lower.ends_with(".cluster.local")
+        || host_lower.ends_with(".nip.io")
+        || host_lower.ends_with(".sslip.io")
+        || host_lower.ends_with(".xip.io")
         || host_lower == "metadata.google.internal"
         || host_lower == "metadata"
         || host_lower == "instance-data"
@@ -303,6 +328,27 @@ pub fn build_auth_code_redirect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_check_no_duplicates_accepts_unique_keys() {
+        let params = vec![
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string()),
+        ];
+        assert!(check_no_duplicates(&params).is_ok());
+        assert!(check_no_duplicates(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_check_no_duplicates_rejects_duplicates() {
+        let params = vec![
+            ("a".to_string(), "1".to_string()),
+            ("b".to_string(), "2".to_string()),
+            ("a".to_string(), "3".to_string()),
+        ];
+        let err = check_no_duplicates(&params).unwrap_err();
+        assert!(err.contains("duplicate parameter: a"), "got: {err}");
+    }
 
     #[test]
     fn test_build_auth_code_redirect() {

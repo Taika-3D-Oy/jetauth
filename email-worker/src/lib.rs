@@ -305,6 +305,7 @@ mod ses {
             .map_err(|e| format!("http error: {e:?}"))?
             .map_err(|e| format!("response error: {e:?}"))?;
 
+        const MAX_SES_RESPONSE_BYTES: usize = 256 * 1024; // 256 KiB
         let status = incoming.status();
         let mut body_bytes = Vec::new();
         if let Ok(inc_body) = incoming.consume()
@@ -312,7 +313,12 @@ mod ses {
         {
             loop {
                 match in_stream.blocking_read(65536) {
-                    Ok(chunk) if !chunk.is_empty() => body_bytes.extend_from_slice(&chunk),
+                    Ok(chunk) if !chunk.is_empty() => {
+                        if body_bytes.len().saturating_add(chunk.len()) > MAX_SES_RESPONSE_BYTES {
+                            break;
+                        }
+                        body_bytes.extend_from_slice(&chunk);
+                    }
                     _ => break,
                 }
             }

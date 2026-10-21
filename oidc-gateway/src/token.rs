@@ -75,6 +75,10 @@ pub async fn handle(
     dpop_header: Option<&str>,
 ) -> Result<Response<String>, String> {
     let form = util::parse_form(body_bytes);
+    // RFC 6749 §3.2: parameters MUST NOT appear more than once.
+    if let Err(e) = util::check_no_duplicates(&form) {
+        return Ok(token_error(StatusCode::BAD_REQUEST, "invalid_request", &e));
+    }
 
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
@@ -109,13 +113,29 @@ pub async fn handle(
                 return Ok(map_token_error(&e));
             }
         };
+    let auth_method = auth_client.auth_method;
     let client = auth_client.client;
+    let is_confidential = client.client_secret.is_some() || client.jwks.is_some();
+    if is_confidential && auth_method == "none" {
+        return Ok(map_token_error(
+            "client authentication required for confidential client",
+        ));
+    }
 
-    // Rate limit token endpoint per client_id: 100 requests per 60s
+    // Rate limit token endpoint per client_id: 100 requests per 60s.
+    // Fail closed: if the limiter is unavailable, reject rather than let
+    // credential-granting traffic through unchecked.
     let rate_key = format!("token:{}", client.client_id);
     match crate::service_client::check_rate(&rate_key, 100, 60).await {
         Ok((false, _)) => return Err("too many token requests. please try again later.".into()),
-        Err(e) => crate::logger::error_message("rate_limit.token_check_failed", e),
+        Err(e) => {
+            crate::logger::error_message("rate_limit.token_check_failed", e);
+            return Ok(token_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "invalid_request",
+                "rate limiter unavailable; please try again later",
+            ));
+        }
         _ => {}
     }
 
@@ -125,7 +145,8 @@ pub async fn handle(
         }
         "refresh_token" => handle_refresh(&form, &client, dpop_jkt.as_deref(), issuer).await,
         "client_credentials" => {
-            handle_client_credentials(&form, &client, dpop_jkt.as_deref(), issuer).await
+            handle_client_credentials(&form, &client, &auth_method, dpop_jkt.as_deref(), issuer)
+                .await
         }
         "urn:ietf:params:oauth:grant-type:device_code" => {
             handle_device_code(&form, &client, dpop_jkt.as_deref(), issuer).await
@@ -183,20 +204,23 @@ async fn handle_code_exchange(
     if store::unix_now() > auth_code.expires_at {
         return Err("authorization code expired".into());
     }
+    if auth_code.pending_consent {
+        return Err("authorization code requires user consent before redemption".into());
+    }
 
-    // PKCE: required for public clients, optional for confidential clients
-    if !auth_code.code_challenge.is_empty() {
-        let verifier = code_verifier.ok_or("missing code_verifier (PKCE was initiated)")?;
-        if !verify_pkce(
-            verifier,
-            &auth_code.code_challenge,
-            &auth_code.code_challenge_method,
-        ) {
-            return Err("PKCE verification failed".into());
-        }
-    } else if client.client_secret.is_none() && client.jwks.is_none() {
-        // Public client MUST have used PKCE
-        return Err("PKCE required for public clients".into());
+    // PKCE (S256) is mandatory for ALL clients — public and confidential
+    // (OAuth 2.1). /authorize only issues codes carrying a code_challenge;
+    // an empty challenge means a legacy or forged code, so fail closed.
+    if auth_code.code_challenge.is_empty() {
+        return Err("PKCE required: authorization code was issued without a code_challenge".into());
+    }
+    let verifier = code_verifier.ok_or("missing code_verifier (PKCE required)")?;
+    if !verify_pkce(
+        verifier,
+        &auth_code.code_challenge,
+        &auth_code.code_challenge_method,
+    ) {
+        return Err("PKCE verification failed".into());
     }
 
     // CAS: atomically consume the auth code (prevents double-spend)
@@ -246,29 +270,43 @@ async fn handle_code_exchange(
     id_claims["at_hash"] = serde_json::json!(compute_at_hash(&access_token));
     let id_token = jwt::sign_id_token_for_client(&id_claims, client).await?;
 
-    // Create refresh token
-    let refresh_raw = store::random_hex(32);
-    let refresh_hash = hex_sha256(&refresh_raw);
-    let now = store::unix_now();
-    let refresh_entry = store::RefreshEntry {
-        user_id: user.id,
-        client_id: client.client_id.clone(),
-        expires_at: now + 86400 * 30,
-        scope: auth_code.scope.clone(),
-        version: now,
-        auth_time,
-        amr: auth_code.amr.clone(),
-        acr: auth_code.acr.clone(),
-        requested_id_token_claims: auth_code.requested_id_token_claims.clone(),
-        requested_userinfo_claims: auth_code.requested_userinfo_claims.clone(),
-        issued_at: now,
-        sid: auth_code.sid.clone(),
-        dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
-    };
-    store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
+    // Refresh tokens are issued ONLY when the offline_access scope was
+    // granted — client confidentiality no longer implies refresh access.
+    let has_offline_access = auth_code.scope.split(' ').any(|s| s == "offline_access");
 
     // Clean up consumed auth code
     let _ = store::delete_auth_code(code).await;
+
+    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
+    let mut response = serde_json::json!({
+        "access_token": access_token,
+        "token_type": token_type,
+        "expires_in": 3600,
+        "id_token": id_token,
+        "scope": auth_code.scope,
+    });
+    if has_offline_access {
+        let refresh_raw = store::random_hex(32);
+        let refresh_hash = hex_sha256(&refresh_raw);
+        let now = store::unix_now();
+        let refresh_entry = store::RefreshEntry {
+            user_id: user.id,
+            client_id: client.client_id.clone(),
+            expires_at: now + 86400 * 30,
+            scope: auth_code.scope.clone(),
+            version: now,
+            auth_time,
+            amr: auth_code.amr.clone(),
+            acr: auth_code.acr.clone(),
+            requested_id_token_claims: auth_code.requested_id_token_claims.clone(),
+            requested_userinfo_claims: auth_code.requested_userinfo_claims.clone(),
+            issued_at: now,
+            sid: auth_code.sid.clone(),
+            dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
+        };
+        store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
+        response["refresh_token"] = serde_json::json!(refresh_raw);
+    }
 
     // Record metrics
     for token_type in ["access", "id_token", "refresh_token"] {
@@ -280,26 +318,6 @@ async fn handle_code_exchange(
             ],
         )
         .await;
-    }
-
-    // Only issue refresh token when offline_access scope is present or client is confidential
-    let has_offline_access = auth_code.scope.split(' ').any(|s| s == "offline_access")
-        || client.client_secret.is_some()
-        || client.jwks.is_some();
-
-    let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
-    let mut response = serde_json::json!({
-        "access_token": access_token,
-        "token_type": token_type,
-        "expires_in": 3600,
-        "id_token": id_token,
-        "scope": auth_code.scope,
-    });
-    if has_offline_access {
-        response["refresh_token"] = serde_json::json!(refresh_raw);
-    } else {
-        // Clean up the refresh token we just stored — it won't be used
-        let _ = store::delete_refresh_token(&refresh_hash).await;
     }
 
     Ok(Response::builder()
@@ -506,6 +524,7 @@ async fn handle_refresh(
 async fn handle_client_credentials(
     form: &[(String, String)],
     client: &store::OidcClient,
+    auth_method: &str,
     dpop_jkt: Option<&str>,
     issuer: &str,
 ) -> Result<Response<String>, String> {
@@ -515,8 +534,8 @@ async fn handle_client_credentials(
 
     let scope = get("scope").unwrap_or("").to_string();
 
-    // Only confidential clients may use client_credentials
-    if client.client_secret.is_none() && client.jwks.is_none() {
+    // Only authenticated confidential clients may use client_credentials
+    if (client.client_secret.is_none() && client.jwks.is_none()) || auth_method == "none" {
         return Err("client_credentials grant requires confidential client".into());
     }
     if !client
@@ -587,7 +606,9 @@ async fn handle_device_code(
 
     let device_code = get("device_code").ok_or("missing device_code")?;
 
-    // Enforce minimum poll interval (5 s) per RFC 8628 §3.5
+    // Enforce minimum poll interval (5 s) per RFC 8628 §3.5.
+    // Fail closed on limiter errors — an unavailable limiter must not turn
+    // the polling endpoint into an unthrottled oracle for device codes.
     let rate_key = format!("device_poll:{device_code}");
     match crate::service_client::check_rate(&rate_key, 1, 5).await {
         Ok((false, _)) => {
@@ -597,12 +618,19 @@ async fn handle_device_code(
                 "polling too fast, wait 5 seconds",
             ));
         }
-        Err(e) => crate::logger::error_message("rate_limit.device_poll_failed", e),
+        Err(e) => {
+            crate::logger::error_message("rate_limit.device_poll_failed", e);
+            return Ok(token_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "invalid_request",
+                "rate limiter unavailable; please try again later",
+            ));
+        }
         _ => {}
     }
 
-    let dc = match store::get_device_code(device_code).await? {
-        Some(dc) => dc,
+    let (dc, revision) = match store::get_device_code_cas(device_code).await? {
+        Some(pair) => pair,
         None => {
             return Ok(token_error(
                 StatusCode::BAD_REQUEST,
@@ -643,6 +671,18 @@ async fn handle_device_code(
             ))
         }
         "approved" => {
+            // Atomically consume the approved device code before minting tokens
+            if store::consume_device_code_cas(device_code, revision)
+                .await
+                .is_err()
+            {
+                return Ok(token_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "device code already consumed",
+                ));
+            }
+
             let user_id = dc
                 .user_id
                 .as_deref()
@@ -681,32 +721,6 @@ async fn handle_device_code(
 
             // Refresh token — only if offline_access requested
             let has_offline = dc.scope.split(' ').any(|s| s == "offline_access");
-            let refresh_raw = store::random_hex(32);
-            let refresh_hash = hex_sha256(&refresh_raw);
-            let refresh_entry = store::RefreshEntry {
-                user_id: user.id.clone(),
-                client_id: client.client_id.clone(),
-                expires_at: now + 86400 * 30,
-                scope: dc.scope.clone(),
-                version: now,
-                auth_time: now,
-                amr: vec!["device".to_string()],
-                acr: None,
-                requested_id_token_claims: vec![],
-                requested_userinfo_claims: vec![],
-                issued_at: now,
-                sid: dc.sid.clone(),
-                dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
-            };
-            store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
-
-            let _ = store::delete_device_code(device_code).await;
-
-            let _ = crate::service_client::increment_metric(
-                "lattice_id_token_issued_total",
-                &[("grant_type", "device_code"), ("token_type", "access")],
-            )
-            .await;
 
             let token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
             let mut response = serde_json::json!({
@@ -717,10 +731,32 @@ async fn handle_device_code(
                 "scope": dc.scope,
             });
             if has_offline {
+                let refresh_raw = store::random_hex(32);
+                let refresh_hash = hex_sha256(&refresh_raw);
+                let refresh_entry = store::RefreshEntry {
+                    user_id: user.id.clone(),
+                    client_id: client.client_id.clone(),
+                    expires_at: now + 86400 * 30,
+                    scope: dc.scope.clone(),
+                    version: now,
+                    auth_time: now,
+                    amr: vec!["device".to_string()],
+                    acr: None,
+                    requested_id_token_claims: vec![],
+                    requested_userinfo_claims: vec![],
+                    issued_at: now,
+                    sid: dc.sid.clone(),
+                    dpop_jkt: dpop_jkt.map(|jkt| jkt.to_string()),
+                };
+                store::save_refresh_token(&refresh_hash, &refresh_entry).await?;
                 response["refresh_token"] = serde_json::json!(refresh_raw);
-            } else {
-                let _ = store::delete_refresh_token(&refresh_hash).await;
             }
+
+            let _ = crate::service_client::increment_metric(
+                "lattice_id_token_issued_total",
+                &[("grant_type", "device_code"), ("token_type", "access")],
+            )
+            .await;
 
             Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -745,6 +781,10 @@ pub async fn handle_revoke(
     auth_header: Option<&str>,
 ) -> Result<Response<String>, String> {
     let form = util::parse_form(body_bytes);
+    // RFC 7009 §2.1 inherits RFC 6749 §3.2: parameters MUST NOT repeat.
+    if let Err(e) = util::check_no_duplicates(&form) {
+        return Ok(token_error(StatusCode::BAD_REQUEST, "invalid_request", &e));
+    }
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
@@ -775,7 +815,15 @@ pub async fn handle_revoke(
                 ));
             }
         };
+    let auth_method = auth_client.auth_method;
     let client = auth_client.client;
+    if (client.client_secret.is_some() || client.jwks.is_some()) && auth_method == "none" {
+        return Ok(token_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client authentication failed",
+        ));
+    }
 
     // Try to revoke as refresh token first (most common case).
     // Verify that the token was issued to the authenticated client (RFC 7009 §2.1).
@@ -816,6 +864,10 @@ pub async fn handle_introspect(
     auth_header: Option<&str>,
 ) -> Result<Response<String>, String> {
     let form = util::parse_form(body_bytes);
+    // RFC 7662 §2.1 inherits RFC 6749 §3.2: parameters MUST NOT repeat.
+    if let Err(e) = util::check_no_duplicates(&form) {
+        return Ok(token_error(StatusCode::BAD_REQUEST, "invalid_request", &e));
+    }
     let get = |key: &str| -> Option<&str> {
         form.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     };
@@ -842,9 +894,10 @@ pub async fn handle_introspect(
                 .unwrap());
         }
     };
+    let auth_method = auth_client.auth_method;
     let client = auth_client.client;
 
-    if client.client_secret.is_none() && client.jwks.is_none() {
+    if (client.client_secret.is_none() && client.jwks.is_none()) || auth_method == "none" {
         return Ok(Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("content-type", "application/json")
@@ -867,7 +920,18 @@ pub async fn handle_introspect(
                 &serde_json::json!({ "error": "rate_limit_exceeded" }),
             ));
         }
-        Err(e) => crate::logger::error_message("rate_limit.introspection_check_failed", e),
+        Err(e) => {
+            // Fail closed: an unavailable limiter must not leave introspection
+            // (a token-validity oracle) unthrottled.
+            crate::logger::error_message("rate_limit.introspection_check_failed", e);
+            return Ok(json_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &serde_json::json!({
+                    "error": "invalid_request",
+                    "error_description": "rate limiter unavailable; please try again later",
+                }),
+            ));
+        }
         _ => {}
     }
 
@@ -1365,6 +1429,26 @@ mod tests {
             resp["cnf"]["jkt"],
             "0ZcOCORZTXcrgnRlOZjvzcGEQXO9RI1mNVZZY3wu_2k"
         );
+    }
+
+    #[test]
+    fn test_handle_rejects_duplicate_form_parameters() {
+        futures::executor::block_on(async {
+            let body =
+                b"grant_type=client_credentials&client_id=test-client&grant_type=refresh_token";
+            let resp = super::handle(body, "https://auth.example.com", None, None)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::BAD_REQUEST);
+            let val: serde_json::Value = serde_json::from_str(resp.body()).unwrap();
+            assert_eq!(val["error"], "invalid_request");
+            assert!(
+                val["error_description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("duplicate parameter")
+            );
+        });
     }
 
     #[test]

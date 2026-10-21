@@ -20,6 +20,10 @@ pub struct RetiredKey {
     pub kid: String,
     pub verifying_key: VerifyingKey<Sha256>,
     pub jwk: serde_json::Value,
+    /// Unix timestamp the key was retired; it leaves JWKS and stops verifying
+    /// at `retired_at + key_manager::RETIRED_GRACE_SECS`.
+    #[allow(dead_code)]
+    pub retired_at: u64,
 }
 
 pub struct KeyStore {
@@ -29,38 +33,47 @@ pub struct KeyStore {
 
 impl KeyStore {
     /// Load signing keys from the key-manager component (JWK string cached).
+    /// `previous` is populated with retired keys still within the verification
+    /// grace period, so `jwks()` / `all_verifiers()` cover current + retired.
     pub async fn load() -> Result<Self, String> {
         let jwk_str = crate::key_manager::get_public_key().await?;
         let jwk: serde_json::Value = serde_json::from_str(&jwk_str).map_err(|e| e.to_string())?;
 
-        let n_b64 = jwk
-            .get("n")
-            .and_then(|v| v.as_str())
-            .ok_or("JWK missing n")?;
-        let e_b64 = jwk
-            .get("e")
-            .and_then(|v| v.as_str())
-            .ok_or("JWK missing e")?;
         let kid = jwk
             .get("kid")
             .and_then(|v| v.as_str())
-            .ok_or("JWK missing kid")?;
-
-        let n = decode_biguint(n_b64, "n")?;
-        let e = decode_biguint(e_b64, "e")?;
-        let public_key = RsaPublicKey::new(n, e).map_err(|e| e.to_string())?;
+            .ok_or("JWK missing kid")?
+            .to_string();
+        let verifying_key = verifying_key_from_jwk(&jwk)?;
 
         let current = SigningKeyPair {
-            kid: kid.to_string(),
-            verifying_key: VerifyingKey::<Sha256>::new(public_key),
+            kid,
+            verifying_key,
             jwk,
             created_at: 0,
         };
 
-        Ok(Self {
-            current,
-            previous: Vec::new(),
-        })
+        let mut previous = Vec::new();
+        let retired = crate::key_manager::get_retired_public_keys()
+            .await
+            .unwrap_or_default();
+        for (kid, retired_at, jwk_str) in retired {
+            let jwk: serde_json::Value = match serde_json::from_str(&jwk_str) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            match verifying_key_from_jwk(&jwk) {
+                Ok(verifying_key) => previous.push(RetiredKey {
+                    kid,
+                    verifying_key,
+                    jwk,
+                    retired_at,
+                }),
+                Err(_) => continue,
+            }
+        }
+
+        Ok(Self { current, previous })
     }
 
     /// Combined JWKS including current key and all active retired keys.
@@ -130,6 +143,7 @@ impl KeyStore {
                 kid: rk.kid,
                 verifying_key: VerifyingKey::<Sha256>::new(public_key),
                 jwk: rk.jwk,
+                retired_at: rk.retired_at,
             });
         }
 
@@ -158,9 +172,23 @@ struct ExportedSigningKey {
 #[derive(Serialize, Deserialize)]
 struct ExportedRetiredKey {
     kid: String,
-    #[allow(dead_code)]
     retired_at: u64,
     jwk: serde_json::Value,
+}
+
+fn verifying_key_from_jwk(jwk: &serde_json::Value) -> Result<VerifyingKey<Sha256>, String> {
+    let n_b64 = jwk
+        .get("n")
+        .and_then(|v| v.as_str())
+        .ok_or("JWK missing n")?;
+    let e_b64 = jwk
+        .get("e")
+        .and_then(|v| v.as_str())
+        .ok_or("JWK missing e")?;
+    let n = decode_biguint(n_b64, "n")?;
+    let e = decode_biguint(e_b64, "e")?;
+    let public_key = RsaPublicKey::new(n, e).map_err(|e| e.to_string())?;
+    Ok(VerifyingKey::<Sha256>::new(public_key))
 }
 
 fn decode_biguint(b64: &str, label: &str) -> Result<BigUint, String> {

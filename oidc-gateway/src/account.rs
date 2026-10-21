@@ -36,7 +36,7 @@ pub async fn create_session_cookie(user_id: &str) -> Result<String, String> {
 
 /// Extract and validate the account session from cookies. Returns (User, csrf_token).
 /// On failure, returns Ok(Err(redirect_response)) so callers can propagate it.
-async fn require_account_session(
+pub(crate) async fn require_account_session(
     headers: &HeaderMap,
 ) -> Result<Result<(User, String), Response<String>>, String> {
     let token = match parse_cookie(headers, COOKIE_NAME) {
@@ -65,8 +65,19 @@ async fn require_account_session(
     }
 
     match store::get_user(&session.user_id).await? {
-        Some(u) => Ok(Ok((u, session.csrf_token))),
-        None => Ok(Err(redirect_to_login("Account not found."))),
+        Some(u) => {
+            if u.status != "active" || store::is_user_revoked(&u.id, session.created_at).await? {
+                let _ = store::delete_account_session(&token).await;
+                return Ok(Err(redirect_to_login(
+                    "Session expired. Please log in again.",
+                )));
+            }
+            Ok(Ok((u, session.csrf_token)))
+        }
+        None => {
+            let _ = store::delete_account_session(&token).await;
+            Ok(Err(redirect_to_login("Account not found.")))
+        }
     }
 }
 
@@ -190,11 +201,21 @@ pub fn extract_idp_session_token(headers: &HeaderMap) -> Option<String> {
 pub async fn get_idp_session_from_headers(headers: &HeaderMap) -> Option<store::IdpSession> {
     let token = parse_cookie(headers, IDP_COOKIE_NAME)?;
     let session = store::get_idp_session(&token).await.ok()??;
-    if store::unix_now() > session.expires_at {
+    if store::unix_now() > session.expires_at
+        || store::is_user_revoked(&session.user_id, session.auth_time)
+            .await
+            .unwrap_or(true)
+    {
         let _ = store::delete_idp_session(&token).await;
         return None;
     }
-    Some(session)
+    match store::get_user(&session.user_id).await.ok()? {
+        Some(u) if u.status == "active" => Some(session),
+        _ => {
+            let _ = store::delete_idp_session(&token).await;
+            None
+        }
+    }
 }
 
 /// Slide the TTL of the existing IdP session and return a refreshed Set-Cookie header.
@@ -202,8 +223,20 @@ pub async fn get_idp_session_from_headers(headers: &HeaderMap) -> Option<store::
 pub async fn refresh_idp_session_cookie_header(headers: &HeaderMap) -> Option<String> {
     let token = parse_cookie(headers, IDP_COOKIE_NAME)?;
     let mut session = store::get_idp_session(&token).await.ok()??;
-    if store::unix_now() > session.expires_at {
+    if store::unix_now() > session.expires_at
+        || store::is_user_revoked(&session.user_id, session.auth_time)
+            .await
+            .unwrap_or(true)
+    {
+        let _ = store::delete_idp_session(&token).await;
         return None;
+    }
+    match store::get_user(&session.user_id).await.ok()? {
+        Some(u) if u.status == "active" => {}
+        _ => {
+            let _ = store::delete_idp_session(&token).await;
+            return None;
+        }
     }
     let ttl = store::get_idp_session_ttl().await;
     session.expires_at = store::unix_now() + ttl;
@@ -464,6 +497,7 @@ pub async fn passkeys_page(
 
 <script>
 var CHALLENGE_TOKEN = '{challenge_token}';
+var CSRF_TOKEN = '{csrf_js}';
 var REG_OPTIONS = {options_json};
 
 function b64url(buf) {{
@@ -508,6 +542,7 @@ async function registerPasskey() {{
             i.value = v;
             form.appendChild(i);
         }}
+        addField('csrf', CSRF_TOKEN);
         addField('token', CHALLENGE_TOKEN);
         addField('name', name);
         addField('clientDataJSON', b64url(cred.response.clientDataJSON));
@@ -531,6 +566,7 @@ if (!window.PublicKeyCredential) {{
 {foot}"##,
         head = page_head("Passkeys", &theme),
         nav = page_nav("/account/passkeys"),
+        csrf_js = util::html_escape(&csrf),
         foot = page_foot(&theme),
     );
 
@@ -543,9 +579,13 @@ pub async fn passkeys_register(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<Response<String>, String> {
-    let (user, _csrf) = get_user_or_redirect!(headers);
+    let (user, csrf) = get_user_or_redirect!(headers);
 
     let form = util::parse_form(body);
+    let submitted_csrf = util::form_value(&form, "csrf").unwrap_or_default();
+    if !csrf.is_empty() && submitted_csrf != csrf {
+        return Err("invalid CSRF token".into());
+    }
     let token = util::form_value(&form, "token").ok_or("missing token")?;
     let name = util::form_value(&form, "name").unwrap_or("My passkey");
     let client_data_json =
@@ -553,15 +593,14 @@ pub async fn passkeys_register(
     let attestation_object =
         util::form_value(&form, "attestationObject").ok_or("missing attestationObject")?;
 
-    // Validate challenge
-    let pc = store::get_passkey_challenge(token)
+    // Atomically consume and validate challenge
+    let pc = store::consume_passkey_challenge(token)
         .await?
         .ok_or("invalid or expired registration token")?;
     if pc.purpose != "register" || pc.user_id != user.id {
         return Err("token mismatch".into());
     }
     if store::unix_now() > pc.expires_at {
-        store::delete_passkey_challenge(token).await?;
         return passkeys_page(
             headers,
             None,
@@ -569,7 +608,6 @@ pub async fn passkeys_register(
         )
         .await;
     }
-    store::delete_passkey_challenge(token).await?;
 
     let issuer = crate::get_issuer();
     let parsed = match crate::passkeys::verify_registration(
@@ -594,6 +632,7 @@ pub async fn passkeys_register(
         .passkey_credentials
         .iter()
         .any(|c| c.credential_id == credential_id)
+        || store::get_user_by_passkey(&credential_id).await?.is_some()
     {
         return passkeys_page(headers, None, Some("This passkey is already registered.")).await;
     }
@@ -725,9 +764,15 @@ pub async fn mfa_page(
 
 // ── POST /account/mfa/setup ─────────────────────────────────
 
-pub async fn mfa_setup(headers: &HeaderMap) -> Result<Response<String>, String> {
-    let (user, _csrf) = get_user_or_redirect!(headers);
+pub async fn mfa_setup(headers: &HeaderMap, body: &[u8]) -> Result<Response<String>, String> {
+    let (user, csrf) = get_user_or_redirect!(headers);
     let theme = crate::theme::resolve_global_theme().await;
+
+    let form = util::parse_form(body);
+    let submitted_csrf = util::form_value(&form, "csrf").unwrap_or_default();
+    if !csrf.is_empty() && submitted_csrf != csrf {
+        return Err("invalid CSRF token".into());
+    }
 
     if user.totp_enabled {
         return mfa_page(headers, None, Some("MFA is already enabled.")).await;
@@ -740,6 +785,9 @@ pub async fn mfa_setup(headers: &HeaderMap) -> Result<Response<String>, String> 
     let user = store::get_user(&user.id).await?.ok_or("user not found")?;
     let user_id = user.id.clone();
     store::update_user_rmw(&user_id, |u| {
+        if u.totp_enabled {
+            return Err("MFA is already enabled".into());
+        }
         u.totp_secret = Some(secret.clone());
         Ok(true)
     })
@@ -761,6 +809,7 @@ pub async fn mfa_setup(headers: &HeaderMap) -> Result<Response<String>, String> 
 <code style="background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:12px;word-break:break-all;display:block;margin-bottom:24px">{otpauth_uri}</code>
 
 <form method="POST" action="/account/mfa/confirm">
+<input type="hidden" name="csrf" value="{csrf_val}">
 <label for="code">Enter the 6-digit code from your app</label>
 <input type="text" id="code" name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{{6}}" maxlength="6" style="max-width:200px;text-align:center;letter-spacing:6px;font-family:monospace;font-size:20px" autofocus>
 <button type="submit" class="btn btn-primary">Verify &amp; Enable</button>
@@ -771,6 +820,7 @@ pub async fn mfa_setup(headers: &HeaderMap) -> Result<Response<String>, String> 
         nav = page_nav("/account/mfa"),
         secret = util::html_escape(&secret),
         otpauth_uri = util::html_escape(&otpauth_uri),
+        csrf_val = util::html_escape(&csrf),
         foot = page_foot(&theme),
     );
 
@@ -780,13 +830,32 @@ pub async fn mfa_setup(headers: &HeaderMap) -> Result<Response<String>, String> 
 // ── POST /account/mfa/confirm ───────────────────────────────
 
 pub async fn mfa_confirm(headers: &HeaderMap, body: &[u8]) -> Result<Response<String>, String> {
-    let (user, _csrf) = get_user_or_redirect!(headers);
+    let (user, csrf) = get_user_or_redirect!(headers);
     let theme = crate::theme::resolve_global_theme().await;
 
     let form = util::parse_form(body);
+    let submitted_csrf = util::form_value(&form, "csrf").unwrap_or_default();
+    if !csrf.is_empty() && submitted_csrf != csrf {
+        return Err("invalid CSRF token".into());
+    }
     let code = util::form_value(&form, "code").ok_or("missing code")?;
 
+    if !matches!(
+        crate::service_client::check_rate(&format!("mfa_confirm:{}", user.id), 5, 900).await,
+        Ok((true, _))
+    ) {
+        return mfa_page(
+            headers,
+            None,
+            Some("Too many attempts. Please try again later."),
+        )
+        .await;
+    }
+
     let user = store::get_user(&user.id).await?.ok_or("user not found")?;
+    if user.totp_enabled {
+        return mfa_page(headers, None, Some("MFA is already enabled.")).await;
+    }
     let secret = user.totp_secret.as_deref().ok_or("MFA setup not started")?;
 
     if !crate::totp::verify_totp(secret, code.trim()) {
@@ -806,6 +875,7 @@ pub async fn mfa_confirm(headers: &HeaderMap, body: &[u8]) -> Result<Response<St
 <code style="background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:12px;word-break:break-all;display:block;margin-bottom:24px">{otpauth_uri}</code>
 
 <form method="POST" action="/account/mfa/confirm">
+<input type="hidden" name="csrf" value="{csrf_val}">
 <label for="code">Enter the 6-digit code from your app</label>
 <input type="text" id="code" name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{{6}}" maxlength="6" style="max-width:200px;text-align:center;letter-spacing:6px;font-family:monospace;font-size:20px" autofocus>
 <button type="submit" class="btn btn-primary">Verify &amp; Enable</button>
@@ -816,6 +886,7 @@ pub async fn mfa_confirm(headers: &HeaderMap, body: &[u8]) -> Result<Response<St
             nav = page_nav("/account/mfa"),
             secret = util::html_escape(secret),
             otpauth_uri = util::html_escape(&otpauth_uri),
+            csrf_val = util::html_escape(&csrf),
             foot = page_foot(&theme),
         );
         return Ok(html_response(&html));
@@ -825,6 +896,9 @@ pub async fn mfa_confirm(headers: &HeaderMap, body: &[u8]) -> Result<Response<St
     let recovery_codes = crate::totp::generate_recovery_codes();
     let user_id = user.id.clone();
     store::update_user_rmw(&user_id, |u| {
+        if u.totp_enabled {
+            return Err("MFA is already enabled".into());
+        }
         u.totp_enabled = true;
         u.recovery_codes = recovery_codes.clone();
         Ok(true)
@@ -880,6 +954,18 @@ pub async fn mfa_disable(headers: &HeaderMap, body: &[u8]) -> Result<Response<St
         return mfa_page(headers, None, Some("Password is required to disable MFA.")).await;
     }
 
+    if !matches!(
+        crate::service_client::check_rate(&format!("mfa_disable:{}", user.id), 5, 900).await,
+        Ok((true, _))
+    ) {
+        return mfa_page(
+            headers,
+            None,
+            Some("Too many attempts. Please try again later."),
+        )
+        .await;
+    }
+
     let user = store::get_user(&user.id).await?.ok_or("user not found")?;
 
     // Verify password before allowing MFA disable
@@ -909,6 +995,7 @@ pub async fn mfa_disable(headers: &HeaderMap, body: &[u8]) -> Result<Response<St
     .await?;
 
     let _ = store::delete_user_refresh_tokens(&user.id).await;
+    let _ = store::revoke_user_sessions(&user.id).await;
     let _ = store::log_audit("mfa_disabled", &user.id, &user.id, "tokens revoked").await;
 
     mfa_page(

@@ -1,6 +1,6 @@
 # JetAuth Management REST API Reference
 
-The JetAuth Management REST API allows administrators and tenant operators to programmatically manage clients, tenants, users, identity providers, lifecycle hooks, settings, and audit logs.
+The JetAuth Management REST API allows administrators and tenant operators to programmatically manage clients, tenants, users, identity providers, lifecycle hooks, signing keys, settings, and audit logs.
 
 An OpenAPI 3.1.0 specification for this API is available in [`openapi.yaml`](openapi.yaml).
 
@@ -9,17 +9,18 @@ An OpenAPI 3.1.0 specification for this API is available in [`openapi.yaml`](ope
 ## Table of Contents
 1. [Authentication & Authorization](#authentication--authorization)
 2. [Global Settings & System Status](#global-settings--system-status)
-3. [OAuth 2.0 / OIDC Clients](#oauth-20--oidc-clients)
-4. [Tenants & Organizations](#tenants--organizations)
-5. [Tenant Memberships & Invitations](#tenant-memberships--invitations)
-6. [User Management, Privacy & GDPR](#user-management-privacy--gdpr)
-7. [Multi-Factor Authentication (MFA / TOTP)](#multi-factor-authentication-mfa--totp)
-8. [Hardware Passkeys (WebAuthn / FIDO2)](#hardware-passkeys-webauthn--fido2)
-9. [External Identity Providers (SSO)](#external-identity-providers-sso)
-10. [Lifecycle Hooks (Rhai Scripting)](#lifecycle-hooks-rhai-scripting)
-11. [Audit Trail](#audit-trail)
-12. [Dynamic Client Registration (RFC 7591 / RFC 7592)](#dynamic-client-registration-rfc-7591--rfc-7592)
-13. [Standard Error Responses](#standard-error-responses)
+3. [Signing Key Management](#signing-key-management)
+4. [OAuth 2.0 / OIDC Clients](#oauth-20--oidc-clients)
+5. [Tenants & Organizations](#tenants--organizations)
+6. [Tenant Memberships & Invitations](#tenant-memberships--invitations)
+7. [User Management, Privacy & GDPR](#user-management-privacy--gdpr)
+8. [Multi-Factor Authentication (MFA / TOTP)](#multi-factor-authentication-mfa--totp)
+9. [Hardware Passkeys (WebAuthn / FIDO2)](#hardware-passkeys-webauthn--fido2)
+10. [External Identity Providers (SSO)](#external-identity-providers-sso)
+11. [Lifecycle Hooks (Rhai Scripting)](#lifecycle-hooks-rhai-scripting)
+12. [Audit Trail](#audit-trail)
+13. [Dynamic Client Registration (RFC 7591 / RFC 7592)](#dynamic-client-registration-rfc-7591--rfc-7592)
+14. [Standard Error Responses](#standard-error-responses)
 
 ---
 
@@ -33,7 +34,7 @@ Content-Type: application/json
 ```
 
 ### Roles and Permission Hierarchy
-* **Superadmin**: Global cluster administrator. Token must have `aud: "lid-admin"`, `token_use: "access"`, and `role: "superadmin"`. Superadmins can manage all resources across the entire deployment.
+* **Superadmin**: Global cluster administrator. Token must have `aud: "lid-admin"`, `token_type: "access"`, and `role: "superadmin"`. Superadmins can manage all resources across the entire deployment.
 * **Tenant Roles**: Assigned within specific tenants (`owner`, `admin`, `manager`, `member`).
   * `owner` / `admin` / `manager`: Can manage tenant users and send invitations (`require_tenant_role(..., "manager")`). Cannot invite or assign a role higher than their own.
 * **Self**: Authenticated user acting on their own account (`require_self_or_superadmin(claims, user_id)`), such as configuring MFA, managing passkeys, triggering password resets, or exercising GDPR data portability and erasure rights.
@@ -81,25 +82,104 @@ Checks whether the authority has an initial superadmin or requires bootstrapping
 * **Response**: `200 OK`
   ```json
   {
-    "allow_registration": true
+    "allow_registration": true,
+    "default_theme": null,
+    "idp_session_ttl_seconds": 604800
   }
   ```
 
 ### Update System Settings
 * **Method / Path**: `PUT /api/settings`
 * **Access**: Superadmin
-* **Request Body**:
+* **Request Body** (partial update; only supplied fields change):
   ```json
   {
-    "allow_registration": false
+    "allow_registration": false,
+    "default_theme": { "theme_preset": "glassmorphic" },
+    "idp_session_ttl_seconds": 86400
   }
   ```
+  * `default_theme.theme_preset` is validated against the known presets: `taika-dark`, `taika-light`, `glassmorphism`, `glassmorphic`, `glassmorphic-frost`, `cyberpunk`, `midnight-neon`, `minimal-noir`, `dark-luxury`, `neo-brutalist`, `default` (returns 400 otherwise).
+  * `idp_session_ttl_seconds` must be between `300` (5 minutes) and `7776000` (90 days).
+* **Response**: `200 OK` (full settings model, as in `GET /api/settings`)
+
+### Deployment Statistics
+Aggregate object counts for dashboards. Deliberately excludes active sessions.
+
+* **Method / Path**: `GET /api/stats`
+* **Access**: Superadmin
 * **Response**: `200 OK`
   ```json
   {
-    "allow_registration": false
+    "tenants": 3,
+    "users": 42,
+    "clients": 7,
+    "identity_providers": 2
   }
   ```
+
+---
+
+## Signing Key Management
+
+Inspect and rotate the RSA (RS256) and EC (ES256) signing-key pair. Signing keys are per-region in multi-region deployments (each region is its own issuer); rotate each region independently.
+
+### List Signing Keys
+Returns the full key ring: the current pair plus any retired keys still within their verification grace period. Private key material is never exposed.
+
+* **Method / Path**: `GET /api/keys`
+* **Access**: Superadmin
+* **Response**: `200 OK`
+  ```json
+  {
+    "keys": [
+      {
+        "kid": "AbC123xYz...",
+        "alg": "RS256",
+        "status": "current",
+        "version": 2,
+        "created_at": 1776235000,
+        "retired_at": null,
+        "grace_expires_at": null
+      },
+      {
+        "kid": "OldKid456...",
+        "alg": "RS256",
+        "status": "retired",
+        "version": 1,
+        "created_at": 1775000000,
+        "retired_at": 1776235000,
+        "grace_expires_at": 1776239200
+      }
+    ]
+  }
+  ```
+  `status` is `current` (signs new tokens), `retired` (still in JWKS for verification until `grace_expires_at`), or `expired` (past the grace window, dropped from JWKS).
+
+### Rotate Signing Keys
+Generates a fresh RSA+EC pair as the next key-ring generation and retires the outgoing pair. New tokens are signed with the new keys immediately; retired keys remain in the JWKS document (verification only) for a **4200-second grace period** (max token lifetime 3600s + 600s skew margin).
+
+* **Method / Path**: `POST /api/keys/rotate`
+* **Access**: Superadmin
+* **Response**: `200 OK`
+  ```json
+  {
+    "rotated": true,
+    "version": 2,
+    "current": {
+      "rsa": { "kid": "AbC123xYz...", "key": "signing-key-v2" },
+      "ec": { "kid": "EcK789...", "key": "signing-key-ec-v2" }
+    },
+    "retired": [
+      { "kid": "OldKid456...", "alg": "RS256", "retired_at": 1776235000 },
+      { "kid": "OldEcKid...", "alg": "ES256", "retired_at": 1776235000 }
+    ],
+    "grace_expires_at": 1776239200
+  }
+  ```
+* **Errors**: `409 Conflict` if a concurrent rotation is in progress (the ring metadata is CAS-guarded; retry after the other rotation completes).
+
+> **Verifier note**: during the grace window the JWKS document (`/.well-known/jwks.json`) contains the current *and* retired keys — more than 2 entries. Token verifiers must select keys by the JWT header `kid`, never by position or count.
 
 ---
 
@@ -214,6 +294,20 @@ Endpoints to manage OAuth 2.0 client applications.
   }
   ```
 
+### Rotate Client Secret
+Generates a new secret for a confidential client; the raw value is returned exactly once (stored HMAC-hashed).
+
+* **Method / Path**: `POST /api/clients/:id/rotate-secret`
+* **Access**: Superadmin
+* **Response**: `200 OK`
+  ```json
+  {
+    "client_id": "client_9fa2b3c4d5e6f7a8",
+    "client_secret": "9a01f8e234c9876543210fedcba98765"
+  }
+  ```
+* **Errors**: `400 Bad Request` for public clients (`token_endpoint_auth_method: "none"` — this includes the built-in `lid-admin`); `404 Not Found` for unknown clients.
+
 ---
 
 ## Tenants & Organizations
@@ -258,6 +352,30 @@ Endpoints to manage OAuth 2.0 client applications.
 * **Method / Path**: `GET /api/tenants/:id`
 * **Access**: Superadmin
 * **Response**: `200 OK`
+
+### Update Tenant
+Partially updates a tenant's display name and/or lifecycle status. Replicated to remote regions.
+
+* **Method / Path**: `PATCH /api/tenants/:id`
+* **Access**: Superadmin
+* **Request Body** (only supplied fields change):
+  ```json
+  {
+    "display_name": "Acme Corporation",
+    "status": "suspended"
+  }
+  ```
+  `status` must be `active` or `suspended` (returns 400 otherwise).
+* **Response**: `200 OK`
+  ```json
+  {
+    "id": "tenant_1a2b3c4d",
+    "name": "acme-corp",
+    "display_name": "Acme Corporation",
+    "status": "suspended",
+    "created_at": 1775630000
+  }
+  ```
 
 ### Delete Tenant
 * **Method / Path**: `DELETE /api/tenants/:id`
@@ -319,7 +437,7 @@ Endpoints to manage OAuth 2.0 client applications.
   ```
 
 ### Invite User to Tenant
-Generates a 7-day token and dispatches an invitation email.
+Generates a 7-day token and dispatches an invitation email. The invitable roles are `admin`, `manager`, and `member` — `owner` cannot be granted via invitation (use `POST /api/tenants/:id/users` with sufficient privilege instead). You cannot invite to a role higher than your own (returns 403).
 
 * **Method / Path**: `POST /api/tenants/:id/users/invite`
 * **Access**: Tenant Manager/Admin/Owner, or Superadmin
@@ -362,6 +480,42 @@ Generates a 7-day token and dispatches an invitation email.
 ---
 
 ## User Management, Privacy & GDPR
+
+### List Users
+Global user list with optional filtering.
+
+* **Method / Path**: `GET /api/users?q=&limit=`
+* **Access**: Superadmin
+* **Query Parameters**:
+  * `q` *(optional)*: case-insensitive substring filter on email and name
+  * `limit` *(optional)*: default `100`, max `500`
+* **Response**: `200 OK`
+  ```json
+  [
+    {
+      "id": "user_4f9a0c1e",
+      "email": "jane@example.com",
+      "name": "Jane Doe",
+      "status": "active",
+      "created_at": 1775630000,
+      "totp_enabled": true,
+      "superadmin": false
+    }
+  ]
+  ```
+
+### Activate User
+Sets the user's status to `active` — intended for accounts stuck in `pending` (e.g. a lost verification email).
+
+* **Method / Path**: `POST /api/users/:id/activate`
+* **Access**: Superadmin
+* **Response**: `200 OK`
+  ```json
+  {
+    "id": "user_4f9a0c1e",
+    "status": "active"
+  }
+  ```
 
 ### Initiate Password Reset
 Dispatches a password reset email with a 1-hour reset token (rate limited to 3 requests per hour).
@@ -496,7 +650,7 @@ Disables TOTP and revokes all active refresh tokens and sessions for security.
 
 ### Passkey Registration: Options
 * **Method / Path**: `POST /api/users/:id/passkeys/register-options`
-* **Access**: Self
+* **Access**: Self or Superadmin
 * **Response**: `200 OK`
   ```json
   {
@@ -516,7 +670,7 @@ Disables TOTP and revokes all active refresh tokens and sessions for security.
 
 ### Passkey Registration: Complete
 * **Method / Path**: `POST /api/users/:id/passkeys/register-complete`
-* **Access**: Self
+* **Access**: Self or Superadmin
 * **Request Body**:
   ```json
   {
@@ -549,7 +703,7 @@ Disables TOTP and revokes all active refresh tokens and sessions for security.
 
 ## External Identity Providers (SSO)
 
-Configure upstream identity providers for social login (Google, GitHub, generic OIDC).
+Configure upstream identity providers for social login. Supported `provider_type` values: `google`, `github` (dedicated handlers) and `microsoft` (generic OIDC federation path; set `discovery_url` via the update endpoint).
 
 ### List Identity Providers
 * **Method / Path**: `GET /api/identity-providers`
@@ -579,6 +733,38 @@ Configure upstream identity providers for social login (Google, GitHub, generic 
   }
   ```
 * **Response**: `201 Created`
+
+### Update Identity Provider
+Only supplied fields are considered, with deliberate empty-string semantics:
+
+* `client_id` / `client_secret`: an empty string (or omission) **leaves the stored value unchanged**.
+* `display_name` / `discovery_url`: an empty string **clears** the field.
+* `discovery_url`, when non-empty, must use the `https` scheme (returns 400 otherwise).
+* The stored `client_secret` is never echoed in any response.
+
+* **Method / Path**: `PUT /api/identity-providers/:id`
+* **Access**: Superadmin
+* **Request Body**:
+  ```json
+  {
+    "client_id": "",
+    "client_secret": "GOCSPX-new-secret",
+    "enabled": false,
+    "display_name": "Sign in with Google",
+    "discovery_url": ""
+  }
+  ```
+* **Response**: `200 OK`
+  ```json
+  {
+    "id": "idp_google_01",
+    "provider_type": "google",
+    "client_id": "123456789.apps.googleusercontent.com",
+    "enabled": false,
+    "display_name": "Sign in with Google",
+    "discovery_url": null
+  }
+  ```
 
 ### Delete Identity Provider
 * **Method / Path**: `DELETE /api/identity-providers/:id`
@@ -673,7 +859,7 @@ Query the immutable semantic audit stream recorded in NATS JetStream.
 * **Query Parameters**:
   * `actor_id` *(optional)*: Filter by actor user ID
   * `target_id` *(optional)*: Filter by target entity ID
-  * `event_type` *(optional)*: e.g. `client_created`, `tenant_created`, `mfa_enabled`, `user_deleted`
+  * `event_type` *(optional)*: e.g. `client_created`, `tenant_created`, `tenant_updated`, `identity_provider_updated`, `mfa_enabled`, `user_deleted`
   * `since` *(optional)*: Unix epoch timestamp in seconds
   * `until` *(optional)*: Unix epoch timestamp in seconds
   * `limit` *(optional)*: Default `100`, max `500`
@@ -714,6 +900,10 @@ Endpoints available at `/connect/register` or `/oauth/register`:
 | `PUT` | `/connect/register/:id` | Registration Access Token | RFC 7592 Client Configuration Update |
 | `DELETE` | `/connect/register/:id` | Registration Access Token | RFC 7592 Client Configuration Delete |
 
+`POST` is gated by the `client_registration_mode` config: `disabled` (default, returns 403 `access_denied`), `open`, or `protected` (requires a Bearer initial access token; missing/invalid token returns 401 `invalid_token`). A successful registration returns `201` with `client_id`, `client_secret` (confidential clients only, shown once), `registration_client_uri`, and `registration_access_token` (shown once — required for the RFC 7592 operations below).
+
+`GET`/`PUT`/`DELETE /connect/register/:id` authenticate with the registration access token as a Bearer token; a missing or invalid token returns 401 with a `WWW-Authenticate: Bearer` challenge. An unknown client returns 404 `invalid_client`. `PUT` applies partial updates (only supplied fields change) and returns the updated configuration. `DELETE` returns `204 No Content`; the built-in `lid-admin` client cannot be deleted (403). Validation failures on metadata (redirect URIs, grant types, auth methods) return 400 with RFC 7591 §3.2.2 error codes (`invalid_redirect_uri`, `invalid_client_metadata`).
+
 ---
 
 ## Standard Error Responses
@@ -727,11 +917,17 @@ When an error occurs, the API returns a standard JSON error envelope:
 }
 ```
 
+The `error` code is derived from the HTTP status (`invalid_request`, `invalid_token`, `insufficient_scope`, `not_found`, `too_many_requests`, `server_error`).
+
 ### Common HTTP Status Codes
 * `200 OK`: Request succeeded.
 * `201 Created`: Resource successfully created.
 * `400 Bad Request`: Validation failure or malformed payload.
 * `401 Unauthorized`: Missing, invalid, or expired Bearer token.
 * `403 Forbidden`: Insufficient role or authority to perform operation.
-* `404 Not Found`: Target resource not found.
+* `404 Not Found`: Target resource (tenant, user, client, hook, identity provider, membership, or passkey) not found.
+* `409 Conflict`: Conflicting state — the user is already a member of the tenant, MFA is already enabled, the passkey is already registered, or a concurrent signing-key rotation is in progress.
 * `429 Too Many Requests`: Rate limit exceeded (e.g. password resets).
+* `500 Internal Server Error`: Storage outage or other internal failure. The response body is a generic `internal error` message; diagnostic detail is logged server-side only and never sent to the client.
+
+> **Exception**: `POST /api/invitations/accept` deliberately returns `400` (not `404`/`410`) for unknown or expired invitation tokens, so the endpoint cannot be used as a token-validity oracle.

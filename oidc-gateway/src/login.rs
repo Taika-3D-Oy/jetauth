@@ -89,6 +89,21 @@ pub async fn login_page(session_id: &str, error: Option<&str>) -> Response<Strin
         None => String::new(),
     };
 
+    // Device authorization grant: warn the user that this sign-in will grant a
+    // device access, so a cross-site submission of someone else's user_code
+    // cannot silently steer them through a plain-looking login.
+    let is_device_flow = store::get_auth_session(session_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.code_challenge_method == "device")
+        .unwrap_or(false);
+    let device_hint_html = if is_device_flow {
+        r#"<div style="color:#b45309;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);padding:10px 14px;border-radius:calc(var(--radius) * 0.6);margin-bottom:16px;font-size:13px">You are signing in to authorize a device. Only continue if you started this on your own device.</div>"#.to_string()
+    } else {
+        String::new()
+    };
+
     // Check if external identity providers are enabled
     let idps = store::list_identity_providers().await.unwrap_or_default();
     let enabled_idps: Vec<_> = idps.into_iter().filter(|i| i.enabled).collect();
@@ -166,6 +181,7 @@ button:hover,.passkey-btn:hover{{background:var(--primary-hover);transform:trans
 <h1>Sign In</h1>
 <p class="sub">{app_name}</p>
 {error_html}
+{device_hint_html}
 <form method="POST" action="/login" id="login-form">
 <input type="hidden" name="session_id" value="{session_id_html}">
 <label for="email">Email</label>
@@ -431,12 +447,9 @@ pub async fn handle_login(
         .await?
         .ok_or("invalid or expired session")?;
 
-    // Browser binding: the lid_flow cookie set at /authorize must match this
-    // session (login-CSRF protection). Device-flow sessions are created by
-    // /device instead and are exempt.
-    if session.code_challenge_method != "device"
-        && !crate::account::flow_cookie_matches(headers, session_id)
-    {
+    // Browser binding: the lid_flow cookie set at /authorize or /device must
+    // match this session (login-CSRF protection).
+    if !crate::account::flow_cookie_matches(headers, session_id) {
         let _ = crate::store::log_audit("login_flow_cookie_mismatch", "", "", remote_ip).await;
         return Ok(login_page(
             session_id,
@@ -460,39 +473,6 @@ pub async fn handle_login(
     let user = match crate::store::get_user_by_email(email).await? {
         Some(u) if u.status == "active" => u,
         _ => {
-            // Cross-region redirect: if user not found locally, check remote regions
-            if store::region_id().is_some() {
-                let email_hash = store::hmac_email(&email.to_lowercase());
-                if let Ok(Some(region)) = crate::service_client::lookup_region(&email_hash).await
-                    && let Some(base_url) = store::region_domain(&region)
-                {
-                    // Redirect to the remote region's /authorize preserving OIDC params
-                    let enc = crate::util::percent_encode;
-                    let mut url = format!(
-                        "{}/authorize?response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method={}&state={}&scope={}&nonce={}&login_hint={}",
-                        base_url,
-                        enc(&session.client_id),
-                        enc(&session.redirect_uri),
-                        enc(&session.code_challenge),
-                        enc(&session.code_challenge_method),
-                        enc(&session.state),
-                        enc(&session.scope),
-                        enc(&session.nonce),
-                        enc(email),
-                    );
-                    if let Some(max_age) = session.max_age {
-                        url.push_str(&format!("&max_age={max_age}"));
-                    }
-                    // Clean up the local session
-                    let _ = store::delete_auth_session(session_id).await;
-                    return Ok(Response::builder()
-                        .status(http::StatusCode::FOUND)
-                        .header("location", &url)
-                        .body(String::new())
-                        .unwrap());
-                }
-            }
-
             // Perform a dummy password hash to prevent timing-based enumeration.
             let _ = crate::service_client::verify_password(
                 password,
@@ -507,11 +487,22 @@ pub async fn handle_login(
         }
     };
 
-    // Verify password FIRST via password-hasher. Lockout state is only
-    // revealed after a CORRECT password, so a wrong password always gets the
-    // same generic error (prevents email-existence and lockout enumeration).
+    // Check account lockout and verify password via password-hasher.
+    // Always run verify_password and return the same generic error even when
+    // locked so locked accounts cannot be used as a password oracle (OIDC-08).
+    let is_locked = crate::store::is_account_locked(&user.id).await?;
     match crate::service_client::verify_password(password, &user.password_hash).await {
-        Ok(true) => {}
+        Ok(true) if !is_locked => {}
+        Ok(true) => {
+            let _ =
+                crate::store::log_audit("login_locked", &user.id, &user.id, "account locked").await;
+            let _ = crate::service_client::increment_metric(
+                "lattice_id_login_attempts_total",
+                &[("flow", "password"), ("result", "failure")],
+            )
+            .await;
+            return Ok(login_page(session_id, Some("Invalid email or password")).await);
+        }
         Ok(false) => {
             let locked = crate::store::record_failed_login(&user.id)
                 .await
@@ -544,22 +535,6 @@ pub async fn handle_login(
             .await;
             return Ok(login_page(session_id, Some("Invalid email or password")).await);
         }
-    }
-
-    // Password correct — only now is it safe to reveal account lockout.
-    if crate::store::is_account_locked(&user.id).await? {
-        let _ = crate::store::log_audit("login_locked", &user.id, &user.id, "account locked").await;
-        let _ = crate::service_client::increment_metric(
-            "lattice_id_login_attempts_total",
-            &[("flow", "password"), ("result", "failure")],
-        )
-        .await;
-        return Ok(login_page(
-            session_id,
-            Some(
-                "Account temporarily locked due to too many failed attempts. Please try again later.",
-            ),
-        ).await);
     }
 
     // Password verified — check if MFA is required
@@ -627,18 +602,24 @@ pub async fn handle_mfa(
         return Ok(login_page(session_id, Some("MFA session expired, please log in again")).await);
     }
 
-    // Browser binding: the lid_flow cookie set at /authorize must match this
-    // session. Device-flow sessions are created by /device and are exempt.
-    let is_device_flow = store::get_auth_session(&pending.session_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.code_challenge_method == "device")
-        .unwrap_or(false);
-    if !is_device_flow && !crate::account::flow_cookie_matches(headers, &pending.session_id) {
+    // Prevent cross-flow or session-swapping attacks (OIDC-07):
+    // 1. Admin MFA tokens ("admin") must never be redeemed at /login/mfa.
+    // 2. The submitted session_id must match the session bound to mfa_token.
+    // 3. The underlying AuthSession must still exist.
+    if pending.session_id == "admin" || session_id != pending.session_id {
+        let _ = store::delete_mfa_pending(mfa_token).await;
+        return Err("invalid or expired MFA session".into());
+    }
+    let _auth_session = store::get_auth_session(&pending.session_id)
+        .await?
+        .ok_or("invalid or expired session")?;
+
+    // Browser binding: the lid_flow cookie set at /authorize or /device must
+    // match this session.
+    if !crate::account::flow_cookie_matches(headers, &pending.session_id) {
         let _ = store::log_audit("mfa_flow_cookie_mismatch", &pending.user_id, "", "").await;
         return Ok(login_page(
-            session_id,
+            &pending.session_id,
             Some("Your sign-in session could not be verified. Please start over."),
         )
         .await);
@@ -661,12 +642,18 @@ pub async fn handle_mfa(
                 store::delete_mfa_pending(mfa_token).await?;
                 let _ = store::log_audit("mfa_success", &user.id, &user.id, "totp").await;
                 let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
-                return complete_login_with_amr(&user, session_id, "totp", amr, &pending.remote_ip)
-                    .await;
+                return complete_login_with_amr(
+                    &user,
+                    &pending.session_id,
+                    "totp",
+                    amr,
+                    &pending.remote_ip,
+                )
+                .await;
             }
             Ok(false) => {
                 return Ok(login_page(
-                    session_id,
+                    &pending.session_id,
                     Some("TOTP code already used. Please wait for the next code."),
                 )
                 .await);
@@ -675,7 +662,7 @@ pub async fn handle_mfa(
                 // Fail closed: a KV error must reject the login, never allow replay.
                 crate::logger::error_message("mfa.totp_replay_check_failed", e);
                 return Ok(login_page(
-                    session_id,
+                    &pending.session_id,
                     Some("Authentication service unavailable. Please try again."),
                 )
                 .await);
@@ -719,7 +706,7 @@ pub async fn handle_mfa(
             let amr = merge_amr(&pending.primary_amr, &["otp", "mfa"]);
             return complete_login_with_amr(
                 &updated_user,
-                session_id,
+                &pending.session_id,
                 "recovery_code",
                 amr,
                 &pending.remote_ip,
@@ -740,7 +727,7 @@ pub async fn handle_mfa(
     .await;
     Ok(mfa_page(
         mfa_token,
-        session_id,
+        &pending.session_id,
         Some("Invalid code. Please try again."),
     )
     .await)
@@ -811,43 +798,55 @@ pub async fn complete_login_with_amr(
 
     // ── Device authorization grant (RFC 8628) ──
     // device::submit() creates an auth session with code_challenge_method = "device"
-    // and state = device_code. Detect this and finalize the device code instead of
-    // issuing an authorization code.
+    // and state = device_code. Do NOT approve the device here: authentication
+    // alone is not consent. Hand the user an explicit confirmation screen that
+    // shows the client name and user_code; the device is approved only via a
+    // POST carrying a single-use approval token bound to this device session.
     if session.code_challenge_method == "device" {
-        let device_code = &session.state;
-        if let Err(e) = crate::store::update_device_code_status(
-            device_code,
-            "approved",
-            Some(&user.id),
-            session.sid.as_deref(),
-        )
-        .await
-        {
-            crate::logger::error_message("device.approve_failed", e);
-            return Ok(login_page(
-                session_id,
-                Some("Failed to activate device. Please try again."),
-            )
-            .await);
-        }
-        let _ = crate::store::log_audit("device_approved", &user.id, &user.id, &session.client_id)
-            .await;
+        let approval_token = match crate::device::create_approval(&session, &user).await {
+            Ok(token) => token,
+            Err(e) => {
+                crate::logger::error_message("device.approval_token_save_failed", e);
+                return Ok(login_page(
+                    session_id,
+                    Some("Failed to continue device activation. Please try again."),
+                )
+                .await);
+            }
+        };
 
-        let mut builder = Response::builder()
-            .status(StatusCode::FOUND)
-            .header("location", "/device/complete")
-            .header("cache-control", "no-store");
-        if let Ok(cookie) = crate::account::create_session_cookie(&user.id).await {
-            builder = builder.header("set-cookie", cookie);
+        let resp = crate::device::confirm_page(&approval_token, None).await;
+        let (mut parts, body) = resp.into_parts();
+        if let Ok(cookie) = crate::account::create_session_cookie(&user.id).await
+            && let Ok(val) = cookie.parse()
+        {
+            parts.headers.append("set-cookie", val);
         }
         if let Ok(cookie) =
             crate::account::create_idp_session_cookie(&user.id, &amr, crate::store::unix_now())
                 .await
+            && let Ok(val) = cookie.parse()
         {
-            builder = builder.header("set-cookie", cookie);
+            parts.headers.append("set-cookie", val);
         }
-        return Ok(builder.body(String::new()).unwrap());
+        return Ok(Response::from_parts(parts, body));
     }
+
+    // ── Consent screen check ──────────────────────────────────────
+    // If the session requires consent, check if the user has already approved
+    // these scopes previously. If not (or if prompt=consent), show the consent page.
+    let force_consent = session.prompt.as_deref() == Some("consent");
+    let needs_consent = if force_consent {
+        true
+    } else if session.needs_consent {
+        let already_consented =
+            crate::store::has_user_consented(&user.id, &session.client_id, &session.scope)
+                .await
+                .unwrap_or(false);
+        !already_consented
+    } else {
+        false
+    };
 
     // Generate auth code
     let code = crate::store::random_hex(32);
@@ -870,27 +869,12 @@ pub async fn complete_login_with_amr(
         expires_at: crate::store::unix_now() + 300,
         state: session.state.clone(),
         sid: session.sid.clone(),
-    };
-
-    // ── Consent screen ──────────────────────────────────────
-    // If the session requires consent, check if the user has already approved
-    // these scopes previously. If not (or if prompt=consent), show the consent page.
-    let force_consent = session.prompt.as_deref() == Some("consent");
-    let needs_consent = if force_consent {
-        true
-    } else if session.needs_consent {
-        let already_consented =
-            crate::store::has_user_consented(&user.id, &session.client_id, &session.scope)
-                .await
-                .unwrap_or(false);
-        !already_consented
-    } else {
-        false
+        pending_consent: needs_consent,
     };
 
     if needs_consent {
-        // Store the pending auth code *before* consent so we can issue it
-        // after approval without re-doing the whole login.
+        // Store the pending auth code *before* consent with pending_consent = true
+        // so it cannot be redeemed at /token until approved (OIDC-05).
         crate::store::save_auth_code(&code, &auth_code).await?;
 
         let client = crate::store::get_client(&auth_code.client_id)
@@ -1058,7 +1042,7 @@ pub async fn handle_consent(
     let submitted_csrf = crate::util::form_value(&form, "csrf_token").unwrap_or("");
     let decision = crate::util::form_value(&form, "decision").unwrap_or("deny");
 
-    let auth_code = crate::store::get_auth_code(code)
+    let mut auth_code = crate::store::get_auth_code(code)
         .await?
         .ok_or("invalid or expired authorisation code")?;
 
@@ -1104,7 +1088,11 @@ pub async fn handle_consent(
             .unwrap());
     }
 
-    // Approved — redirect with the auth code
+    // Approved — clear pending_consent flag and save updated AuthCode (OIDC-05)
+    auth_code.pending_consent = false;
+    crate::store::save_auth_code(code, &auth_code).await?;
+
+    // Redirect with the auth code
     let issuer = crate::get_issuer();
     let redirect = crate::util::build_auth_code_redirect(
         &auth_code.redirect_uri,

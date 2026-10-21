@@ -422,16 +422,14 @@ PY
   missing_status=$(curl -sS -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer $admin_token" \
     "$BASE_URL/api/users/nonexistent-user-xxx/export")
-  # API returns 400 for non-existent users (consistent across all endpoints)
-  assert_eq "400" "$missing_status" "export of missing user"
-  log "PASS: Export of nonexistent user → 400"
+  assert_eq "404" "$missing_status" "export of missing user"
+  log "PASS: Export of nonexistent user → 404"
 
   # Unauthenticated export must 401
   missing_status=$(curl -sS -o /dev/null -w "%{http_code}" \
     "$BASE_URL/api/users/${admin_id}/export")
-  [[ "$missing_status" == "400" || "$missing_status" == "401" || "$missing_status" == "403" ]] \
-    || fail "unauthenticated export should be rejected, got $missing_status"
-  log "PASS: Unauthenticated export rejected → $missing_status"
+  assert_eq "401" "$missing_status" "unauthenticated export"
+  log "PASS: Unauthenticated export rejected → 401"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Case 4: GDPR — DELETE /api/users/:id
@@ -464,8 +462,8 @@ PY
   after_del_status=$(curl -sS -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer $admin_token" \
     "$BASE_URL/api/users/${del_id}/export")
-  assert_eq "400" "$after_del_status" "export after deletion"
-  log "PASS: Deleted user's export → 400"
+  assert_eq "404" "$after_del_status" "export after deletion"
+  log "PASS: Deleted user's export → 404"
 
   # 4d: Superadmin must not be able to delete themselves
   local self_del_status
@@ -480,9 +478,8 @@ PY
   local unauth_del
   unauth_del=$(curl -sS -o /dev/null -w "%{http_code}" \
     -X DELETE "$BASE_URL/api/users/${del_id}")
-  [[ "$unauth_del" == "400" || "$unauth_del" == "401" || "$unauth_del" == "403" ]] \
-    || fail "unauthenticated delete should be rejected, got $unauth_del"
-  log "PASS: Unauthenticated delete → 401/403"
+  assert_eq "401" "$unauth_del" "unauthenticated delete"
+  log "PASS: Unauthenticated delete → 401"
 
   log "=== Account / CSRF / Consent / GDPR: ALL TESTS PASSED ==="
 }

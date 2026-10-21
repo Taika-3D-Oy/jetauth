@@ -1,28 +1,24 @@
 use crate::store::{self, ClientTheme, RuntimeSettings};
 use crate::util;
 
-/// Sanitize custom CSS by stripping closing style tags and scripts to prevent HTML injection.
-pub fn sanitize_custom_css(css: &str) -> String {
+/// Strip a single pass of `<style`, `</style`, `<script`, `</script`, and `<!--...-->` tags.
+fn strip_dangerous_css_tags_once(css: &str) -> String {
     let lower = css.to_ascii_lowercase();
-    if !lower.contains("</style") && !lower.contains("<script") && !lower.contains("<!--") {
-        return css.to_string();
-    }
     let mut out = String::with_capacity(css.len());
     let mut chars = css.char_indices().peekable();
     while let Some((idx, ch)) = chars.next() {
         let rem_lower = &lower[idx..];
         if rem_lower.starts_with("</style")
+            || rem_lower.starts_with("<style")
             || rem_lower.starts_with("<script")
             || rem_lower.starts_with("</script")
         {
-            // Skip until '>' or end of string
             for (_, c) in chars.by_ref() {
                 if c == '>' {
                     break;
                 }
             }
         } else if rem_lower.starts_with("<!--") {
-            // Skip until '-->' or end of string
             let mut dash_count = 0;
             for (_, c) in chars.by_ref() {
                 if c == '-' {
@@ -38,6 +34,116 @@ pub fn sanitize_custom_css(css: &str) -> String {
         }
     }
     out
+}
+
+/// Sanitize custom CSS by iteratively stripping closing style/script tags, HTML comments,
+/// and any remaining `<` characters so content can never break out of a `<style>` element.
+pub fn sanitize_custom_css(css: &str) -> String {
+    let mut current = css.to_string();
+    for _ in 0..8 {
+        let next = strip_dangerous_css_tags_once(&current);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    // In HTML5 RAWTEXT state (<style>), '<' is the only character that can initiate
+    // a closing </style> tag and has no valid meaning in CSS selectors or declarations.
+    current.retain(|c| c != '<');
+    current
+}
+
+/// Returns true if a CSS property value is safe to interpolate into `:root { --var: <val>; }`.
+/// Rejects characters that could break out of the CSS declaration, block, or `<style>` tag,
+/// as well as external resource loaders (`url(`, `@import`).
+pub fn is_safe_css_value(val: &str) -> bool {
+    if val.len() > 512 {
+        return false;
+    }
+    if val
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | '{' | '}' | ';' | '\\' | '\n' | '\r' | '\0'))
+    {
+        return false;
+    }
+    let lower = val.to_ascii_lowercase();
+    if lower.contains("url(") || lower.contains("@import") || lower.contains("expression(") {
+        return false;
+    }
+    true
+}
+
+/// Sanitize a single CSS custom property value, falling back to `fallback` if unsafe.
+pub fn sanitize_css_value<'a>(val: Option<&'a str>, fallback: &'a str) -> &'a str {
+    match val {
+        Some(v) if !v.trim().is_empty() && is_safe_css_value(v) => v,
+        _ => fallback,
+    }
+}
+
+/// Validate all fields of a [`ClientTheme`] before persisting.
+pub fn validate_theme(theme: &ClientTheme) -> Result<(), String> {
+    if let Some(preset) = theme.theme_preset.as_deref()
+        && !preset.is_empty()
+        && !is_known_preset(preset)
+    {
+        return Err(format!(
+            "unknown theme preset (valid: {})",
+            KNOWN_THEME_PRESETS.join(", ")
+        ));
+    }
+    let css_fields: &[(&str, Option<&str>)] = &[
+        ("logo_height", theme.logo_height.as_deref()),
+        ("primary_color", theme.primary_color.as_deref()),
+        ("primary_hover_color", theme.primary_hover_color.as_deref()),
+        ("background_color", theme.background_color.as_deref()),
+        ("card_background", theme.card_background.as_deref()),
+        ("card_border", theme.card_border.as_deref()),
+        ("card_shadow", theme.card_shadow.as_deref()),
+        ("card_backdrop_blur", theme.card_backdrop_blur.as_deref()),
+        ("text_color", theme.text_color.as_deref()),
+        ("text_muted_color", theme.text_muted_color.as_deref()),
+        ("input_background", theme.input_background.as_deref()),
+        ("input_border_color", theme.input_border_color.as_deref()),
+        ("input_text_color", theme.input_text_color.as_deref()),
+        ("button_text_color", theme.button_text_color.as_deref()),
+        ("border_radius", theme.border_radius.as_deref()),
+        ("font_family", theme.font_family.as_deref()),
+    ];
+    for (name, val) in css_fields {
+        if let Some(v) = val
+            && !is_safe_css_value(v)
+        {
+            return Err(format!("invalid or unsafe CSS value in theme.{name}"));
+        }
+    }
+    let url_fields: &[(&str, Option<&str>)] = &[
+        ("logo_url", theme.logo_url.as_deref()),
+        ("favicon_url", theme.favicon_url.as_deref()),
+        (
+            "background_image_url",
+            theme.background_image_url.as_deref(),
+        ),
+        ("font_url", theme.font_url.as_deref()),
+        ("terms_url", theme.terms_url.as_deref()),
+        ("privacy_url", theme.privacy_url.as_deref()),
+        ("help_url", theme.help_url.as_deref()),
+    ];
+    for (name, val) in url_fields {
+        if let Some(u) = val
+            && !u.is_empty()
+            && (!util::is_safe_url(u)
+                || u.chars().any(|c| {
+                    matches!(
+                        c,
+                        '"' | '\'' | '(' | ')' | ';' | '{' | '}' | '<' | '>' | '\\' | '\n' | '\r'
+                    )
+                }))
+        {
+            return Err(format!("invalid or unsafe URL in theme.{name}"));
+        }
+    }
+    Ok(())
 }
 
 /// Fallback base theme if none configured.
@@ -73,6 +179,27 @@ pub fn fallback_theme() -> ClientTheme {
         help_url: None,
         custom_css: None,
     }
+}
+
+/// Theme preset names recognized by [`apply_preset`], including aliases.
+/// Anything else resolves to the default theme.
+pub const KNOWN_THEME_PRESETS: &[&str] = &[
+    "taika-dark",
+    "taika-light",
+    "glassmorphism",
+    "glassmorphic",
+    "glassmorphic-frost",
+    "cyberpunk",
+    "midnight-neon",
+    "minimal-noir",
+    "dark-luxury",
+    "neo-brutalist",
+    "default",
+];
+
+/// Whether `name` is a recognized theme preset.
+pub fn is_known_preset(name: &str) -> bool {
+    KNOWN_THEME_PRESETS.contains(&name)
 }
 
 /// Apply a preset template to a theme, populating any fields that are not explicitly overridden.
@@ -482,42 +609,36 @@ pub fn render_head_tags(theme: &ClientTheme) -> String {
 
 /// Generate CSS variable values and styles.
 pub fn render_css_variables(theme: &ClientTheme) -> String {
-    let primary = theme.primary_color.as_deref().unwrap_or("#10b981");
-    let primary_hover = theme.primary_hover_color.as_deref().unwrap_or("#059669");
-    let bg = theme
-        .background_color
-        .as_deref()
-        .unwrap_or("linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)");
-    let card_bg = theme
-        .card_background
-        .as_deref()
-        .unwrap_or("rgba(15, 23, 42, 0.75)");
-    let card_border = theme
-        .card_border
-        .as_deref()
-        .unwrap_or("1px solid rgba(255, 255, 255, 0.12)");
-    let card_shadow = theme
-        .card_shadow
-        .as_deref()
-        .unwrap_or("0 25px 50px -12px rgba(0, 0, 0, 0.5)");
-    let card_blur = theme.card_backdrop_blur.as_deref().unwrap_or("20px");
-    let text = theme.text_color.as_deref().unwrap_or("#f8fafc");
-    let text_muted = theme.text_muted_color.as_deref().unwrap_or("#94a3b8");
-    let input_bg = theme
-        .input_background
-        .as_deref()
-        .unwrap_or("rgba(30, 41, 59, 0.6)");
-    let input_border = theme
-        .input_border_color
-        .as_deref()
-        .unwrap_or("rgba(255, 255, 255, 0.16)");
-    let input_text = theme.input_text_color.as_deref().unwrap_or("#f8fafc");
-    let button_text = theme.button_text_color.as_deref().unwrap_or("#ffffff");
-    let radius = theme.border_radius.as_deref().unwrap_or("14px");
-    let font_family = theme
-        .font_family
-        .as_deref()
-        .unwrap_or("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif");
+    let primary = sanitize_css_value(theme.primary_color.as_deref(), "#10b981");
+    let primary_hover = sanitize_css_value(theme.primary_hover_color.as_deref(), "#059669");
+    let bg = sanitize_css_value(
+        theme.background_color.as_deref(),
+        "linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)",
+    );
+    let card_bg = sanitize_css_value(theme.card_background.as_deref(), "rgba(15, 23, 42, 0.75)");
+    let card_border = sanitize_css_value(
+        theme.card_border.as_deref(),
+        "1px solid rgba(255, 255, 255, 0.12)",
+    );
+    let card_shadow = sanitize_css_value(
+        theme.card_shadow.as_deref(),
+        "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
+    );
+    let card_blur = sanitize_css_value(theme.card_backdrop_blur.as_deref(), "20px");
+    let text = sanitize_css_value(theme.text_color.as_deref(), "#f8fafc");
+    let text_muted = sanitize_css_value(theme.text_muted_color.as_deref(), "#94a3b8");
+    let input_bg = sanitize_css_value(theme.input_background.as_deref(), "rgba(30, 41, 59, 0.6)");
+    let input_border = sanitize_css_value(
+        theme.input_border_color.as_deref(),
+        "rgba(255, 255, 255, 0.16)",
+    );
+    let input_text = sanitize_css_value(theme.input_text_color.as_deref(), "#f8fafc");
+    let button_text = sanitize_css_value(theme.button_text_color.as_deref(), "#ffffff");
+    let radius = sanitize_css_value(theme.border_radius.as_deref(), "14px");
+    let font_family = sanitize_css_value(
+        theme.font_family.as_deref(),
+        "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
+    );
 
     let mut css = format!(
         r#":root {{
@@ -542,6 +663,12 @@ pub fn render_css_variables(theme: &ClientTheme) -> String {
 
     if let Some(bg_img) = &theme.background_image_url
         && util::is_safe_url(bg_img)
+        && !bg_img.chars().any(|c| {
+            matches!(
+                c,
+                '"' | '\'' | '(' | ')' | ';' | '{' | '}' | '<' | '>' | '\\' | '\n' | '\r'
+            )
+        })
     {
         css.push_str(&format!(
                 r#"body {{ background-image: url("{}"); background-size: cover; background-position: center; }}"#,
@@ -565,7 +692,7 @@ pub fn render_css_variables(theme: &ClientTheme) -> String {
 /// Render the header logo HTML.
 pub fn render_logo(theme: &ClientTheme) -> String {
     let app_name = util::html_escape(&theme.app_name);
-    let logo_height = theme.logo_height.as_deref().unwrap_or("48px");
+    let logo_height = sanitize_css_value(theme.logo_height.as_deref(), "48px");
     match &theme.logo_url {
         Some(url) if util::is_safe_url(url) => format!(
             r#"<div style="text-align:center;margin-bottom:20px"><img src="{}" alt="{}" style="max-height:{};max-width:100%;object-fit:contain"></div>"#,

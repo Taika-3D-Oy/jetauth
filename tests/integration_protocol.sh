@@ -23,16 +23,16 @@ main() {
   # Case 1: Invalid Bearer Token (Must fail)
   log "Case 1: Accessing protected resource with invalid token..."
   local status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer invalid-garbage" "$BASE_URL/api/tenants")
-  if [[ "$status" != "401" ]] && [[ "$status" != "400" ]]; then
-    fail "Invalid token should return 401/400 (unauthorized), got $status"
+  if [[ "$status" != "401" ]]; then
+    fail "Invalid token should return 401 (unauthorized), got $status"
   fi
   log "OK: Invalid token rejected."
 
   # Case 2: Expired/Malformed JWT (Simulated with garbage but correct header structure)
   log "Case 2: Malformed JWT structure..."
   local mal_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer a.b.c" "$BASE_URL/api/tenants")
-  if [[ "$mal_status" == "200" ]]; then
-    fail "Malformed JWT was accepted!"
+  if [[ "$mal_status" != "401" ]]; then
+    fail "Malformed JWT should return 401, got $mal_status"
   fi
   log "OK: Malformed JWT rejected."
 

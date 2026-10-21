@@ -399,6 +399,9 @@ pub struct AuthCode {
     /// Session ID for Back-Channel Logout & OIDC session management.
     #[serde(default)]
     pub sid: Option<String>,
+    /// True while awaiting user approval on the consent screen; cannot be redeemed at /token.
+    #[serde(default)]
+    pub pending_consent: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -832,6 +835,7 @@ pub fn region_id() -> Option<String> {
 }
 
 /// Get the base URL for a remote region.
+#[allow(dead_code)]
 pub fn region_domain(region: &str) -> Option<String> {
     let json_str = config_value("region_domains")?;
     let map: serde_json::Value = serde_json::from_str(&json_str).ok()?;
@@ -975,6 +979,20 @@ fn handle_test_ldb_request(
         "delete" => {
             map.remove(&full_key);
             Ok(serde_json::json!({ "ok": true }))
+        }
+        "cas_delete" => {
+            let expected_rev = payload
+                .get("revision")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match map.get(&full_key) {
+                Some((_, current_rev)) if *current_rev == expected_rev => {
+                    map.remove(&full_key);
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+                Some(_) => Err("revision mismatch".into()),
+                None => Err("not found".into()),
+            }
         }
         "exists" => {
             let exists = map.contains_key(&full_key);
@@ -1743,6 +1761,11 @@ pub async fn delete_user(user_id: &str) -> Result<(), String> {
     )
     .await;
 
+    // Remove passkey → user_id index entries
+    for pk in &user.passkey_credentials {
+        let _ = kv_delete(&user_idx_store(), &format!("passkey:{}", pk.credential_id)).await;
+    }
+
     // Remove user record
     kv_delete(&users_store(), &format!("user:{user_id}")).await?;
 
@@ -1791,12 +1814,13 @@ pub async fn list_users() -> Result<Vec<User>, String> {
 
 pub async fn get_user_by_email(email: &str) -> Result<Option<User>, String> {
     let email_lower = email.to_lowercase();
+    let email_hmac = hmac_email(&email_lower);
 
     // Check with region-authority where this user lives.
     // If authority says user is remote, return None so the caller can
     // attempt a cross-region redirect.  Otherwise (local or unknown),
     // fall through to the local KV lookup.
-    let lookup = crate::region_authority::lookup(&email_lower)
+    let lookup = crate::region_authority::lookup(&email_hmac)
         .await
         .map_err(|e| format!("authority lookup failed: {}", e))?;
 
@@ -2173,6 +2197,12 @@ pub async fn get_tenant(id: &str) -> Result<Option<Tenant>, String> {
 
 pub async fn delete_tenant(id: &str) -> Result<(), String> {
     kv_delete(&tenants_store(), &format!("tenant:{id}")).await
+}
+
+/// Overwrite an existing tenant record (used by tenant updates).
+pub async fn update_tenant(tenant: &Tenant) -> Result<(), String> {
+    let key = format!("tenant:{}", tenant.id);
+    kv_set(&tenants_store(), &key, tenant).await
 }
 
 pub async fn list_tenants() -> Result<Vec<Tenant>, String> {
@@ -2571,11 +2601,18 @@ pub async fn ensure_default_client() -> Result<(), String> {
 }
 
 /// Register the Lattice-ID Admin UI OIDC client.
+///
+/// `lid-admin` is a PUBLIC client: it authenticates at the token endpoint with
+/// `token_endpoint_auth_method: "none"` and relies on S256 PKCE for the
+/// authorization-code exchange. There is no client secret.
+///
+/// The record is rewritten unconditionally on every call: this keeps the
+/// redirect URIs in sync with the configured issuer (e.g. after switching from
+/// :8000 to port 80) AND repairs older deployments that stored the broken
+/// confidential-client shape (`client_secret_basic` with an unusable secret),
+/// which made every /token exchange fail with invalid_client.
 pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), String> {
     let admin_id = "lid-admin";
-    // Always rewrite the admin client so redirect URIs stay in sync with the
-    // configured issuer (e.g. after switching from :8000 to port 80).
-    let existing_secret = get_client(admin_id).await?.and_then(|c| c.client_secret);
     let mut redirect_uris = vec![
         format!("{issuer}"),
         format!("{issuer}/"),
@@ -2600,7 +2637,7 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
     }
     let client = OidcClient {
         client_id: admin_id.to_string(),
-        client_secret: existing_secret,
+        client_secret: None,
         post_logout_redirect_uris: redirect_uris.clone(),
         redirect_uris,
         grant_types: vec![
@@ -2613,7 +2650,7 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
         backchannel_logout_session_required: false,
         id_token_signed_response_alg: None,
         first_party: true,
-        token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+        token_endpoint_auth_method: Some("none".to_string()),
         jwks: None,
         require_pushed_authorization_requests: false,
     };
@@ -2750,14 +2787,6 @@ pub async fn consume_passkey_challenge(token: &str) -> Result<Option<PasskeyChal
         }
         None => Ok(None),
     }
-}
-
-pub async fn get_passkey_challenge(token: &str) -> Result<Option<PasskeyChallenge>, String> {
-    kv_get(&sessions_store(), &format!("passkey:{token}")).await
-}
-
-pub async fn delete_passkey_challenge(token: &str) -> Result<(), String> {
-    kv_delete(&sessions_store(), &format!("passkey:{token}")).await
 }
 
 // ── Passkey credential index ────────────────────────────────
@@ -3065,6 +3094,19 @@ pub async fn get_device_code(device_code: &str) -> Result<Option<DeviceCode>, St
     kv_get(&sessions_store(), &format!("device:{device_code}")).await
 }
 
+pub async fn get_device_code_cas(device_code: &str) -> Result<Option<(DeviceCode, u64)>, String> {
+    kv_get_revision(&sessions_store(), &format!("device:{device_code}")).await
+}
+
+pub async fn consume_device_code_cas(device_code: &str, revision: u64) -> Result<(), String> {
+    kv_cas_delete(
+        &sessions_store(),
+        &format!("device:{device_code}"),
+        revision,
+    )
+    .await
+}
+
 /// Look up a device code by its short user_code.  Returns the DeviceCode if found.
 pub async fn get_device_code_by_user_code(user_code: &str) -> Result<Option<DeviceCode>, String> {
     let key = format!("device_user_code:{}", user_code.to_uppercase());
@@ -3082,17 +3124,18 @@ pub async fn update_device_code_status(
     user_id: Option<&str>,
     sid: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(mut dc) = get_device_code(device_code).await? {
+    if let Some((mut dc, rev)) = get_device_code_cas(device_code).await? {
         dc.status = status.to_string();
         dc.user_id = user_id.map(String::from);
         if sid.is_some() {
             dc.sid = sid.map(String::from);
         }
         let remaining_ttl = dc.expires_at.saturating_sub(unix_now());
-        kv_set_ttl(
+        kv_cas_swap_ttl(
             &sessions_store(),
             &format!("device:{device_code}"),
             &dc,
+            rev,
             remaining_ttl.max(1),
         )
         .await?;
@@ -3108,24 +3151,57 @@ pub async fn delete_device_code(device_code: &str) -> Result<(), String> {
 
 /// Save a CSRF token → session_id mapping for generic social login flows.
 pub async fn save_social_csrf(csrf_token: &str, session_id: &str) -> Result<(), String> {
-    kv_set_raw_ttl(
+    kv_set_ttl(
         &sessions_store(),
         &format!("social_csrf:{csrf_token}"),
-        session_id.as_bytes(),
+        &session_id.to_string(),
         600,
     )
     .await
 }
 
-/// Consume and return the session_id for a generic social login CSRF token.
+/// Atomically consume and return the session_id for a generic social login CSRF token.
 pub async fn consume_social_csrf(csrf_token: &str) -> Result<Option<String>, String> {
     let key = format!("social_csrf:{csrf_token}");
-    match kv_get_raw(&sessions_store(), &key).await? {
-        Some(bytes) => {
-            let _ = kv_delete(&sessions_store(), &key).await;
-            Ok(Some(
-                String::from_utf8(bytes).map_err(|_| "invalid csrf bytes".to_string())?,
-            ))
+    match kv_get_revision::<String>(&sessions_store(), &key).await? {
+        Some((session_id, revision)) => {
+            match kv_cas_delete(&sessions_store(), &key, revision).await {
+                Ok(()) => Ok(Some(session_id)),
+                Err(e) if e.contains("revision mismatch") => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+// ── Admin UI OIDC login (PKCE verifier storage) ─────────────
+
+const TTL_ADMIN_PKCE_VERIFIER: u64 = TTL_AUTH_SESSION; // 10 min, matches auth session
+
+/// Persist the PKCE `code_verifier` for an admin UI OIDC login attempt,
+/// keyed by the random OAuth `state` parameter of that attempt.
+pub async fn save_admin_pkce_verifier(state: &str, verifier: &str) -> Result<(), String> {
+    kv_set_ttl(
+        &sessions_store(),
+        &format!("adminpkce:{state}"),
+        &verifier.to_string(),
+        TTL_ADMIN_PKCE_VERIFIER,
+    )
+    .await
+}
+
+/// Atomically consume the verifier for a login attempt (single-use).
+/// Returns None when the state is unknown, expired, or already consumed.
+pub async fn consume_admin_pkce_verifier(state: &str) -> Result<Option<String>, String> {
+    let key = format!("adminpkce:{state}");
+    match kv_get_revision::<String>(&sessions_store(), &key).await? {
+        Some((verifier, revision)) => {
+            match kv_cas_delete(&sessions_store(), &key, revision).await {
+                Ok(()) => Ok(Some(verifier)),
+                Err(e) if e.contains("revision mismatch") => Ok(None),
+                Err(e) => Err(e),
+            }
         }
         None => Ok(None),
     }
@@ -3224,6 +3300,75 @@ mod tests {
             delete_user("usr-prefix-1").await.unwrap();
             let remaining_consents = list_user_consents("usr-prefix-1").await.unwrap();
             assert!(remaining_consents.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_ensure_admin_client_public_client_and_legacy_repair() {
+        futures::executor::block_on(async {
+            init_config_for_test(true, None);
+
+            // NOTE: the `client:lid-admin` key is shared with authorize.rs tests
+            // (auto-ensure path) across test threads, so assert only the
+            // issuer-independent invariants here.
+
+            ensure_admin_client("https://idp.example.com", false)
+                .await
+                .unwrap();
+            let client = get_client("lid-admin").await.unwrap().unwrap();
+            assert_eq!(client.client_secret, None);
+            assert_eq!(client.token_endpoint_auth_method.as_deref(), Some("none"));
+            assert!(client.first_party);
+            assert!(!client.redirect_uris.is_empty());
+
+            // Idempotent: re-running keeps the same public-client shape.
+            ensure_admin_client("https://idp.example.com", false)
+                .await
+                .unwrap();
+            let client = get_client("lid-admin").await.unwrap().unwrap();
+            assert_eq!(client.client_secret, None);
+            assert_eq!(client.token_endpoint_auth_method.as_deref(), Some("none"));
+
+            // Repair: a pre-fix deployment stored the broken confidential-client
+            // shape (client_secret_basic with an unusable secret), which made
+            // every /token exchange fail with invalid_client.
+            let legacy = OidcClient {
+                client_id: "lid-admin".to_string(),
+                client_secret: Some("stale-hash".to_string()),
+                redirect_uris: vec!["https://old.example.com/admin".to_string()],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "Lattice-ID Admin".to_string(),
+                first_party: true,
+                token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+                ..Default::default()
+            };
+            save_client(&legacy).await.unwrap();
+
+            ensure_admin_client("https://idp.example.com", false)
+                .await
+                .unwrap();
+            let repaired = get_client("lid-admin").await.unwrap().unwrap();
+            assert_eq!(repaired.client_secret, None);
+            assert_eq!(repaired.token_endpoint_auth_method.as_deref(), Some("none"));
+        });
+    }
+
+    #[test]
+    fn test_admin_pkce_verifier_single_use() {
+        futures::executor::block_on(async {
+            init_config_for_test(true, None);
+
+            save_admin_pkce_verifier("state-abc", "verifier-xyz")
+                .await
+                .unwrap();
+            let first = consume_admin_pkce_verifier("state-abc").await.unwrap();
+            assert_eq!(first.as_deref(), Some("verifier-xyz"));
+            // Second consume must fail (single-use).
+            let second = consume_admin_pkce_verifier("state-abc").await.unwrap();
+            assert!(second.is_none());
+            // Unknown state.
+            let missing = consume_admin_pkce_verifier("state-nope").await.unwrap();
+            assert!(missing.is_none());
         });
     }
 }

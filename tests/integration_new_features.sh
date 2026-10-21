@@ -199,6 +199,15 @@ PY
   local dev_id
   dev_id=$(echo "$dev_resp" | python3 -c "import json,sys;print(json.loads(sys.stdin.read())['client_id'])")
 
+  # Confidential clients must authenticate at /device_authorization (RFC 8628 §3.1)
+  local da_status
+  da_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/device_authorization" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "client_id=$cc_id")
+  [[ "$da_status" == "400" || "$da_status" == "401" || "$da_status" == "429" ]] \
+    || fail "confidential client without credentials should be rejected, got $da_status"
+  log "  confidential client without secret rejected"
+
   # Step 1: device requests a code
   local da_resp
   da_resp=$(curl -s -X POST "$BASE_URL/device_authorization" \
@@ -251,10 +260,34 @@ PY
     --data-urlencode "session_id=$dev_session_id" \
     --data-urlencode "email=$admin_email" \
     --data-urlencode "password=$password" >/dev/null
-  local devloc
-  devloc=$(header_value "$devlogin_headers" location)
-  echo "$devloc" | grep -q "/device/complete" \
-    || fail "expected /device/complete redirect, got: $devloc"
+
+  # Login must NOT auto-approve the device: the response is the explicit
+  # confirmation page carrying a single-use approval token.
+  grep -q "Authorize a device" "$devlogin_body" \
+    || fail "expected device confirmation page after login, got: $(head -c 300 "$devlogin_body")"
+  grep -q "Device Client" "$devlogin_body" \
+    || fail "confirmation page should show the client name"
+  local approval_token
+  approval_token=$(python3 - "$devlogin_body" <<'PY'
+import re, sys
+html = open(sys.argv[1], 'r', encoding='utf-8').read()
+m = re.search(r'name="approval_token"\s+value="([^"]+)"', html)
+if not m:
+    sys.stderr.write('no approval_token in confirmation page\n')
+    sys.exit(1)
+print(m.group(1))
+PY
+) || fail "no approval_token in confirmation page"
+
+  # User explicitly approves the device
+  local approve_body="$TMP_DIR/dev-approve.html"
+  local approve_headers="$TMP_DIR/dev-approve.headers"
+  curl_capture POST "$BASE_URL/device" "$approve_body" "$approve_headers" \
+    -H 'content-type: application/x-www-form-urlencoded' \
+    --data-urlencode "approval_token=$approval_token" \
+    --data-urlencode "decision=approve" >/dev/null
+  grep -q "Device Activated" "$approve_body" \
+    || fail "expected device activation page after approval, got: $(head -c 300 "$approve_body")"
 
   # Step 4: poll again — should now return tokens
   sleep 6

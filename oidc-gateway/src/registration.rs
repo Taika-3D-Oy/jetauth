@@ -269,7 +269,16 @@ pub async fn register_client(
             }
             false
         }
-        "none" => false,
+        "none" => {
+            if req.jwks.is_some() {
+                return Ok(reg_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_client_metadata",
+                    "jwks parameter is not allowed when token_endpoint_auth_method is none",
+                ));
+            }
+            false
+        }
         other => {
             return Ok(reg_error(
                 StatusCode::BAD_REQUEST,
@@ -278,6 +287,17 @@ pub async fn register_client(
             ));
         }
     };
+
+    if let Some(uri) = &req.backchannel_logout_uri
+        && !uri.is_empty()
+        && let Err(e) = crate::util::is_safe_external_url(uri)
+    {
+        return Ok(reg_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            &format!("Invalid backchannel_logout_uri: {e}"),
+        ));
+    }
 
     let id_token_alg = match req.id_token_signed_response_alg.as_deref() {
         Some("RS256") | None => None,
@@ -336,11 +356,8 @@ pub async fn register_client(
     let reg_token_hash = store::sha256_hex(&raw_reg_token);
     let _ = store::save_registration_token(&client_id, &reg_token_hash).await;
 
-    // Cross-region replication (secret stripped)
-    let mut sync_val = serde_json::to_value(&client).unwrap_or_default();
-    if let Some(obj) = sync_val.as_object_mut() {
-        obj.remove("client_secret");
-    }
+    // Cross-region replication (client_secret is already an HMAC-SHA256 digest)
+    let sync_val = serde_json::to_value(&client).unwrap_or_default();
     crate::service_client::replicate_to_regions("put", "client", &client_id, Some(&sync_val)).await;
 
     let _ = store::log_audit(
@@ -555,6 +572,15 @@ pub async fn update_client(
     }
 
     if let Some(uri) = req.backchannel_logout_uri {
+        if !uri.is_empty()
+            && let Err(e) = crate::util::is_safe_external_url(&uri)
+        {
+            return Ok(reg_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_client_metadata",
+                &format!("Invalid backchannel_logout_uri: {e}"),
+            ));
+        }
         client.backchannel_logout_uri = if uri.is_empty() { None } else { Some(uri) };
     }
     if let Some(req_sess) = req.backchannel_logout_session_required {
@@ -590,6 +616,13 @@ pub async fn update_client(
                 client.token_endpoint_auth_method = Some(auth_m);
             }
             "none" => {
+                if client.client_secret.is_some() {
+                    return Ok(reg_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_client_metadata",
+                        "Confidential client cannot downgrade token_endpoint_auth_method to none",
+                    ));
+                }
                 client.token_endpoint_auth_method = Some(auth_m);
             }
             other => {
@@ -604,6 +637,13 @@ pub async fn update_client(
     if let Some(jwks) = req.jwks {
         client.jwks = Some(jwks);
     }
+    if client.jwks.is_some() && client.token_endpoint_auth_method.as_deref() == Some("none") {
+        return Ok(reg_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "jwks parameter is not allowed when token_endpoint_auth_method is none",
+        ));
+    }
     if let Some(req_par) = req.require_pushed_authorization_requests {
         client.require_pushed_authorization_requests = req_par;
     }
@@ -616,10 +656,7 @@ pub async fn update_client(
         ));
     }
 
-    let mut sync_val = serde_json::to_value(&client).unwrap_or_default();
-    if let Some(obj) = sync_val.as_object_mut() {
-        obj.remove("client_secret");
-    }
+    let sync_val = serde_json::to_value(&client).unwrap_or_default();
     crate::service_client::replicate_to_regions("put", "client", client_id, Some(&sync_val)).await;
 
     let _ = store::log_audit(

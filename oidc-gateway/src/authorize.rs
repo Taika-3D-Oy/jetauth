@@ -32,6 +32,47 @@ fn push_unique(values: &mut Vec<String>, candidate: &str) {
     }
 }
 
+/// Claims this provider can actually deliver in an id_token. Matches
+/// `claims_supported` in discovery.rs (plus internal session claims).
+const SATISFIABLE_ID_TOKEN_CLAIMS: &[&str] = &[
+    "sub",
+    "iss",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "auth_time",
+    "nonce",
+    "acr",
+    "amr",
+    "sid",
+    "email",
+    "email_verified",
+    "name",
+    "given_name",
+    "family_name",
+    "preferred_username",
+    "tenant_id",
+    "tenants",
+    "role",
+];
+
+/// Claims this provider can actually deliver from the userinfo endpoint.
+const SATISFIABLE_USERINFO_CLAIMS: &[&str] = &[
+    "sub",
+    "email",
+    "email_verified",
+    "name",
+    "given_name",
+    "family_name",
+    "preferred_username",
+    "tenant_id",
+    "tenants",
+    "role",
+    "auth_time",
+    "amr",
+];
+
 fn parse_claims_param(raw: Option<&str>) -> Result<ClaimsRequest, String> {
     let Some(raw) = raw.filter(|value| !value.is_empty()) else {
         return Ok(ClaimsRequest::default());
@@ -59,6 +100,37 @@ fn parse_claims_param(raw: Option<&str>) -> Result<ClaimsRequest, String> {
                 return Err("invalid claims parameter claim descriptor".into());
             }
             push_unique(output, claim_name);
+
+            if let Some(descriptor) = descriptor.as_object() {
+                let essential = descriptor
+                    .get("essential")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if essential {
+                    // OIDC Core §5.5.1.1: if an essential claim cannot be
+                    // satisfied the authorization MUST fail. We fail closed:
+                    // claims outside our deliverable set (or pinned to a
+                    // specific value we cannot guarantee) are rejected rather
+                    // than silently dropped.
+                    let satisfiable = if target == "id_token" {
+                        SATISFIABLE_ID_TOKEN_CLAIMS
+                    } else {
+                        SATISFIABLE_USERINFO_CLAIMS
+                    };
+                    if !satisfiable.contains(&claim_name.as_str()) {
+                        return Err(format!(
+                            "cannot satisfy essential claim '{claim_name}' in {target}"
+                        ));
+                    }
+                    let has_value_constraint =
+                        descriptor.get("value").is_some() || descriptor.get("values").is_some();
+                    if has_value_constraint && !(target == "id_token" && claim_name == "acr") {
+                        return Err(format!(
+                            "cannot satisfy essential claim '{claim_name}' with a specific value in {target}"
+                        ));
+                    }
+                }
+            }
 
             if target == "id_token"
                 && claim_name == "acr"
@@ -154,6 +226,10 @@ pub async fn handle(
     headers: &http::HeaderMap,
 ) -> Result<Response<String>, String> {
     let query_params = util::parse_query(query);
+    // RFC 6749 §3.2 / RFC 9126: duplicated parameters must be rejected.
+    // We cannot error-redirect here: with duplicated keys no single
+    // redirect_uri value is trustworthy, so respond 400 instead.
+    util::check_no_duplicates(&query_params)?;
     let mut params = query_params.clone();
     let query_get = |key: &str| -> Option<&str> {
         query_params
@@ -283,16 +359,20 @@ pub async fn handle(
         ));
     }
 
-    // PKCE is required for public third-party clients; optional for confidential clients and first-party clients
-    if !client.first_party && client.client_secret.is_none() && code_challenge.is_none() {
-        return Ok(authorize_error_redirect(
-            redirect_uri,
-            state,
-            "invalid_request",
-            "missing code_challenge (PKCE required for public clients)",
-            issuer,
-        ));
-    }
+    // OAuth 2.1: S256 PKCE is REQUIRED for every authorization-code client,
+    // public or confidential — there are no first-party exceptions.
+    let code_challenge = match code_challenge {
+        Some(challenge) if !challenge.is_empty() => challenge,
+        _ => {
+            return Ok(authorize_error_redirect(
+                redirect_uri,
+                state,
+                "invalid_request",
+                "missing code_challenge (PKCE S256 is required for all clients)",
+                issuer,
+            ));
+        }
+    };
 
     let prompt = get("prompt").unwrap_or("");
     let id_token_hint = get("id_token_hint");
@@ -360,6 +440,23 @@ pub async fn handle(
         acr_values = claims_request.acr_values.clone();
     }
 
+    // Only the TOTP MFA acr is supported (see acr_values_supported in
+    // discovery). An acr value we do not support can never be satisfied —
+    // neither by SSO reuse nor by fresh authentication — so fail the
+    // request instead of silently treating it as satisfied. Choice: return
+    // the standard OAuth error access_denied via error redirect (RFC 6749
+    // §4.1.2.1); there is no more specific standard code for an
+    // unsatisfiable acr.
+    if acr_values.iter().any(|v| v != "urn:lattice-id:mfa:totp") {
+        return Ok(authorize_error_redirect(
+            redirect_uri,
+            state,
+            "access_denied",
+            "requested acr_values are not supported by this provider",
+            issuer,
+        ));
+    }
+
     let validated_hint = match validate_id_token_hint(id_token_hint, issuer, client_id).await {
         Ok(value) => value,
         Err(_) => {
@@ -381,15 +478,18 @@ pub async fn handle(
 
         let acr_satisfied = acr_values.is_empty()
             || acr_values.iter().all(|v| {
-                if v == "urn:lattice-id:mfa:totp" {
-                    sso.amr.iter().any(|a| a == "mfa") && sso.amr.iter().any(|a| a == "otp")
-                } else {
-                    true
-                }
+                // Only "urn:lattice-id:mfa:totp" reaches here — unsupported
+                // acr values were rejected above with access_denied.
+                v == "urn:lattice-id:mfa:totp"
+                    && sso.amr.iter().any(|a| a == "mfa")
+                    && sso.amr.iter().any(|a| a == "otp")
             });
 
         if hint_matches
             && acr_satisfied
+            && !store::is_user_revoked(&sso.user_id, sso.auth_time)
+                .await
+                .unwrap_or(true)
             && let Ok(Some(user)) = store::get_user(&sso.user_id).await
             && user.status == "active"
         {
@@ -404,6 +504,16 @@ pub async fn handle(
             };
             let needs_consent = prompt == "consent" || (!is_first_party && !already_consented);
 
+            if needs_consent && prompt == "none" {
+                return Ok(authorize_error_redirect(
+                    redirect_uri,
+                    state,
+                    "consent_required",
+                    "interaction required: client requires user consent",
+                    issuer,
+                ));
+            }
+
             let code = store::random_hex(32);
             let sid = store::random_hex(16);
             let acr = crate::login::acr_from_amr(&sso.amr);
@@ -411,7 +521,7 @@ pub async fn handle(
                 user_id: user.id.clone(),
                 client_id: client_id.to_string(),
                 redirect_uri: redirect_uri.to_string(),
-                code_challenge: code_challenge.unwrap_or("").to_string(),
+                code_challenge: code_challenge.to_string(),
                 code_challenge_method: code_challenge_method.to_string(),
                 nonce: nonce.to_string(),
                 scope: scope.to_string(),
@@ -425,6 +535,7 @@ pub async fn handle(
                 expires_at: store::unix_now() + 300,
                 state: state.to_string(),
                 sid: Some(sid),
+                pending_consent: needs_consent,
             };
             store::save_auth_code(&code, &auth_code).await?;
             let _ = store::log_audit("sso_reuse", &user.id, &user.id, client_id).await;
@@ -434,15 +545,6 @@ pub async fn handle(
             let account_cookie = crate::account::create_session_cookie(&user.id).await.ok();
 
             if needs_consent {
-                if prompt == "none" {
-                    return Ok(authorize_error_redirect(
-                        redirect_uri,
-                        state,
-                        "consent_required",
-                        "interaction required: client requires user consent",
-                        issuer,
-                    ));
-                }
                 let resp = crate::login::consent_page(&code, &auth_code, &client, &user).await;
                 let (mut parts, body) = resp.into_parts();
                 // Bind the browser to this flow; required on consent submission.
@@ -514,7 +616,7 @@ pub async fn handle(
     let session = AuthSession {
         client_id: client_id.to_string(),
         redirect_uri: redirect_uri.to_string(),
-        code_challenge: code_challenge.unwrap_or("").to_string(),
+        code_challenge: code_challenge.to_string(),
         code_challenge_method: code_challenge_method.to_string(),
         state: state.to_string(),
         scope: scope.to_string(),
@@ -877,6 +979,179 @@ mod tests {
             assert!(
                 res.unwrap_err()
                     .contains("MUST NOT contain other parameters")
+            );
+        });
+    }
+
+    #[test]
+    fn test_parse_claims_param_rejects_unsatisfiable_essential_claim() {
+        let raw = r#"{"id_token": {"phone_number": {"essential": true}}}"#;
+        let result = parse_claims_param(Some(raw));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("cannot satisfy essential claim 'phone_number'")
+        );
+    }
+
+    #[test]
+    fn test_parse_claims_param_rejects_essential_value_constraint() {
+        let raw = r#"{"id_token": {"email": {"essential": true, "value": "a@example.com"}}}"#;
+        let result = parse_claims_param(Some(raw));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("specific value"));
+    }
+
+    #[test]
+    fn test_parse_claims_param_allows_satisfiable_essential_claim() {
+        let raw = r#"{"id_token": {"email": {"essential": true}}, "userinfo": {"name": {"essential": true}}}"#;
+        let result = parse_claims_param(Some(raw)).unwrap();
+        assert!(result.id_token_claims.contains(&"email".to_string()));
+        assert!(result.userinfo_claims.contains(&"name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_claims_param_allows_essential_acr_with_values() {
+        // acr value constraints are enforced through the acr_values flow,
+        // so an essential acr claim is accepted at parse time.
+        let raw =
+            r#"{"id_token": {"acr": {"essential": true, "values": ["urn:lattice-id:mfa:totp"]}}}"#;
+        let result = parse_claims_param(Some(raw)).unwrap();
+        assert_eq!(result.acr_values, vec!["urn:lattice-id:mfa:totp"]);
+    }
+
+    #[test]
+    fn test_authorize_rejects_duplicate_query_parameters() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let query = "response_type=code&response_type=code&client_id=lid-admin&redirect_uri=https://app.example.com/cb";
+            let headers = http::HeaderMap::new();
+            let res = handle(query, "https://issuer.example.com", &headers).await;
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("duplicate parameter"));
+        });
+    }
+
+    #[test]
+    fn test_authorize_requires_pkce_for_confidential_clients() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "conf-pkce-client".to_string(),
+                client_secret: Some("secret".to_string()),
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "Confidential Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("client_secret_basic".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: false,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let headers = http::HeaderMap::new();
+            // No code_challenge: confidential clients are no longer exempt.
+            let query = "response_type=code&client_id=conf-pkce-client&redirect_uri=https://app.example.com/cb&scope=openid&state=s";
+            let resp = handle(query, "https://issuer.example.com", &headers)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::FOUND);
+            let location = resp.headers().get("location").unwrap().to_str().unwrap();
+            assert!(
+                location.contains("error=invalid_request"),
+                "missing code_challenge must error-redirect, got: {location}"
+            );
+            assert!(location.contains("state=s"));
+        });
+    }
+
+    #[test]
+    fn test_authorize_rejects_unsupported_acr_values() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "acr-test-client".to_string(),
+                client_secret: None,
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "ACR Test Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("none".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: false,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let headers = http::HeaderMap::new();
+            let query = "response_type=code&client_id=acr-test-client&redirect_uri=https://app.example.com/cb&scope=openid&state=s&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&acr_values=urn:example:unknown";
+            let resp = handle(query, "https://issuer.example.com", &headers)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::FOUND);
+            let location = resp.headers().get("location").unwrap().to_str().unwrap();
+            assert!(
+                location.contains("error=access_denied"),
+                "unsupported acr_values must be rejected, got: {location}"
+            );
+            assert!(location.contains("state=s"));
+
+            // The supported TOTP acr still proceeds to the login page.
+            let query = "response_type=code&client_id=acr-test-client&redirect_uri=https://app.example.com/cb&scope=openid&state=s&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&acr_values=urn:lattice-id:mfa:totp";
+            let resp = handle(query, "https://issuer.example.com", &headers)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            assert!(resp.body().contains("<html"));
+        });
+    }
+
+    #[test]
+    fn test_authorize_rejects_unsatisfiable_essential_claim() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(false, Some("test_pepper_123456789012345678901234567890"));
+            let client = store::OidcClient {
+                client_id: "claims-essential-client".to_string(),
+                client_secret: None,
+                redirect_uris: vec!["https://app.example.com/cb".to_string()],
+                post_logout_redirect_uris: vec![],
+                grant_types: vec!["authorization_code".to_string()],
+                name: "Claims Essential Client".to_string(),
+                theme: None,
+                backchannel_logout_uri: None,
+                backchannel_logout_session_required: false,
+                id_token_signed_response_alg: None,
+                first_party: false,
+                token_endpoint_auth_method: Some("none".to_string()),
+                jwks: None,
+                require_pushed_authorization_requests: false,
+            };
+            store::save_client(&client).await.unwrap();
+
+            let claims =
+                crate::util::percent_encode(r#"{"id_token":{"phone_number":{"essential":true}}}"#);
+            let headers = http::HeaderMap::new();
+            let query = format!(
+                "response_type=code&client_id=claims-essential-client&redirect_uri=https://app.example.com/cb&scope=openid&state=s&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&claims={claims}"
+            );
+            let resp = handle(&query, "https://issuer.example.com", &headers)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::FOUND);
+            let location = resp.headers().get("location").unwrap().to_str().unwrap();
+            assert!(
+                location.contains("error=invalid_request"),
+                "unsatisfiable essential claim must error-redirect, got: {location}"
             );
         });
     }
