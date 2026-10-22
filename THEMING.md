@@ -1,6 +1,6 @@
 # Theming & White-Labeling Guide
 
-Lattice-ID (Taika ID) features a fully customisable dynamic theming and white-labeling engine. You can change everything from the brand name (e.g. from "Lattice ID" to "Taika ID" or your company's brand) to colors, logos, web fonts, card styles, and footers — either globally across the entire deployment or individually per OAuth client application.
+JetAuth features a fully customisable dynamic theming and white-labeling engine. You can change everything from the brand name (e.g. from "JetAuth" to your company's brand) to colors, logos, web fonts, card styles, and footers — either globally across the entire deployment or individually per OAuth client application.
 
 ---
 
@@ -19,7 +19,7 @@ Lattice-ID (Taika ID) features a fully customisable dynamic theming and white-la
 
 ## Theming Architecture & Resolution Hierarchy
 
-Every authentication surface in Lattice-ID (Login, Passkey/MFA verification, Registration, OAuth Consent, Device Authorization, and Account Management) dynamically resolves its theme using a three-tier hierarchy:
+Every authentication surface in JetAuth (Login, Passkey/MFA verification, Registration, OAuth Consent, Device Authorization, and Account Management) dynamically resolves its theme using a three-tier hierarchy:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -61,7 +61,7 @@ You can select any of the 6 modern presets by setting `theme_preset` to its iden
 Full white-labeling can be achieved purely via theme configuration without changing code:
 
 - **Custom Application / Brand Name (`app_name`)**:
-  Replaces all occurrences of `"Lattice-ID"` or `"Taika ID"` in page headers, login banners, and browser titles with your brand (e.g., `"Acme Cloud ID"`).
+  Replaces all occurrences of `"JetAuth"` or `"Lattice-ID"` in page headers, login banners, and browser titles with your brand (e.g., `"Acme Cloud ID"`).
 - **Custom Logo URL (`logo_url`)**:
   Renders your logo image at the top of login and authorization screens (supports SVG, PNG, WebP, JPEG).
 - **Logo Height (`logo_height`)**:
@@ -71,7 +71,7 @@ Full white-labeling can be achieved purely via theme configuration without chang
 - **Custom Footer Text (`footer_text`)**:
   Custom copyright or legal notice displayed in the footer (e.g., `"© 2026 Acme Corp. All rights reserved."`).
 - **"Powered by" Text (`powered_by_text`)**:
-  Customises the attribution text (e.g., `"Secured by Taika ID"` or `"Powered by Acme Auth"`).
+  Customises the attribution text (e.g., `"Secured by JetAuth"` or `"Powered by Acme Auth"`).
 - **Hide "Powered by" Link (`hide_powered_by`)**:
   Set to `true` to completely eliminate any vendor / powered-by footer notice.
 - **Legal Links (`terms_url`, `privacy_url`, `help_url`)**:

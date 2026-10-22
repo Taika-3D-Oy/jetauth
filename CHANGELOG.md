@@ -331,7 +331,7 @@ This release remediates the findings of a comprehensive security audit of the OI
   - Automatic `:root` CSS variables generator for customizable colors, typography, card background, border, shadow, backdrop blur, and inputs.
   - Custom Google Fonts & Web Fonts loading via configurable `font_url` and `font_family`.
 - **Comprehensive White-Labeling**:
-  - Ability to fully customize brand and application titles (e.g. from "Lattice-ID" to "Taika ID" or custom portal name) purely via theme configuration.
+  - Ability to fully customize brand and application titles (e.g. from "Lattice-ID" to "JetAuth" or custom portal name) purely via theme configuration.
   - Support for custom logo URLs, height settings, and favicon URLs with strict protocol/URL safety validation.
   - Customizable footer copyright notice, terms/privacy/help links, and "Powered by" text with option to completely hide vendor branding (`hide_powered_by`).
 - **Surface-Wide Theming**:

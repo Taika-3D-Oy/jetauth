@@ -423,7 +423,7 @@ pub async fn render_client_detail_page(
                 div class="form-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;" {
                     div class="form-group" {
                         label for="app_name" { "Custom Brand Name" }
-                        input type="text" id="app_name" name="app_name" value=(theme.app_name) placeholder="Taika ID / My App";
+                        input type="text" id="app_name" name="app_name" value=(theme.app_name) placeholder="JetAuth / My App";
                     }
                     div class="form-group" {
                         label for="theme_preset" { "Theme Preset" }
@@ -475,7 +475,7 @@ pub async fn render_client_detail_page(
                 div class="form-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;" {
                     div class="form-group" {
                         label for="powered_by_text" { "Footer 'Powered by' Text" }
-                        input type="text" id="powered_by_text" name="powered_by_text" value=(theme.powered_by_text.unwrap_or_default()) placeholder="Powered by Taika ID";
+                        input type="text" id="powered_by_text" name="powered_by_text" value=(theme.powered_by_text.unwrap_or_default()) placeholder="Powered by JetAuth";
                     }
                     div class="form-group" {
                         label for="footer_text" { "Custom Footer / Copyright Notice" }

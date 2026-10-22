@@ -27,7 +27,7 @@ pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
                 div class="form-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;" {
                     div class="form-group" {
                         label for="default_app_name" { "Application / Brand Name" }
-                        input type="text" id="default_app_name" name="default_app_name" value=(default_theme.app_name) placeholder="Taika ID";
+                        input type="text" id="default_app_name" name="default_app_name" value=(default_theme.app_name) placeholder="JetAuth";
                         div class="form-hint" { "Replaces default name in page titles and headers." }
                     }
                     div class="form-group" {
@@ -58,7 +58,7 @@ pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
                 div class="form-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;" {
                     div class="form-group" {
                         label for="default_powered_by_text" { "Footer 'Powered by' Text" }
-                        input type="text" id="default_powered_by_text" name="default_powered_by_text" value=(default_theme.powered_by_text.unwrap_or_default()) placeholder="Powered by Taika ID";
+                        input type="text" id="default_powered_by_text" name="default_powered_by_text" value=(default_theme.powered_by_text.unwrap_or_default()) placeholder="Powered by JetAuth";
                     }
                     div class="form-group" {
                         label for="default_footer_text" { "Custom Footer / Copyright Notice" }

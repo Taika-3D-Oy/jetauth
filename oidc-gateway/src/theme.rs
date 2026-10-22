@@ -149,7 +149,7 @@ pub fn validate_theme(theme: &ClientTheme) -> Result<(), String> {
 /// Fallback base theme if none configured.
 pub fn fallback_theme() -> ClientTheme {
     ClientTheme {
-        app_name: "Taika ID".to_string(),
+        app_name: "JetAuth".to_string(),
         logo_url: None,
         logo_height: Some("48px".to_string()),
         favicon_url: None,
@@ -172,7 +172,7 @@ pub fn fallback_theme() -> ClientTheme {
         font_family: Some("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif".to_string()),
         font_url: Some("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap".to_string()),
         footer_text: None,
-        powered_by_text: Some("Powered by Taika ID".to_string()),
+        powered_by_text: Some("Powered by JetAuth".to_string()),
         hide_powered_by: false,
         terms_url: None,
         privacy_url: None,
@@ -206,7 +206,7 @@ pub fn is_known_preset(name: &str) -> bool {
 pub fn apply_preset(preset_name: &str) -> ClientTheme {
     match preset_name {
         "taika-dark" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -229,7 +229,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif".to_string()),
             font_url: Some("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap".to_string()),
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -237,7 +237,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         "taika-light" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -260,7 +260,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("'Plus Jakarta Sans', system-ui, -apple-system, sans-serif".to_string()),
             font_url: Some("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap".to_string()),
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -268,7 +268,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         "glassmorphism" | "glassmorphic" | "glassmorphic-frost" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -291,7 +291,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("'Inter', system-ui, -apple-system, sans-serif".to_string()),
             font_url: Some("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap".to_string()),
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -299,7 +299,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         "cyberpunk" | "midnight-neon" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -322,7 +322,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("'Space Grotesk', system-ui, -apple-system, sans-serif".to_string()),
             font_url: Some("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap".to_string()),
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -330,7 +330,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         "minimal-noir" | "dark-luxury" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -353,7 +353,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("'Inter', system-ui, -apple-system, sans-serif".to_string()),
             font_url: Some("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap".to_string()),
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -361,7 +361,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         "neo-brutalist" => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -384,7 +384,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("system-ui, -apple-system, sans-serif".to_string()),
             font_url: None,
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -392,7 +392,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             custom_css: None,
         },
         _ => ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
@@ -415,7 +415,7 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             font_family: Some("system-ui, -apple-system, sans-serif".to_string()),
             font_url: None,
             footer_text: None,
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             terms_url: None,
             privacy_url: None,
@@ -749,7 +749,7 @@ pub fn render_footer(theme: &ClientTheme, extra_links: Option<&str>) -> String {
         let powered_by = theme
             .powered_by_text
             .as_deref()
-            .unwrap_or("Powered by Taika ID");
+            .unwrap_or("Powered by JetAuth");
         if !powered_by.trim().is_empty() {
             parts.push(util::html_escape(powered_by));
         }
@@ -789,12 +789,12 @@ mod tests {
     #[test]
     fn test_apply_preset_taika_dark() {
         let preset = apply_preset("taika-dark");
-        assert_eq!(preset.app_name, "Taika ID");
+        assert_eq!(preset.app_name, "JetAuth");
         assert_eq!(preset.primary_color, Some("#10b981".to_string()));
         assert_eq!(preset.border_radius, Some("14px".to_string()));
         assert_eq!(
             preset.powered_by_text,
-            Some("Powered by Taika ID".to_string())
+            Some("Powered by JetAuth".to_string())
         );
     }
 
@@ -823,14 +823,14 @@ mod tests {
     #[test]
     fn test_render_footer_white_labeled() {
         let theme = ClientTheme {
-            app_name: "Taika ID".to_string(),
-            powered_by_text: Some("Powered by Taika ID".to_string()),
+            app_name: "JetAuth".to_string(),
+            powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
             footer_text: Some("© 2026 Taika 3D".to_string()),
             ..Default::default()
         };
         let footer = render_footer(&theme, Some(r#"<a href="/account">Account</a>"#));
-        assert!(footer.contains("Powered by Taika ID"));
+        assert!(footer.contains("Powered by JetAuth"));
         assert!(footer.contains("© 2026 Taika 3D"));
         assert!(footer.contains("Account"));
         assert!(!footer.contains("Lattice-ID"));
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn test_render_footer_hidden_powered_by() {
         let theme = ClientTheme {
-            app_name: "Taika ID".to_string(),
+            app_name: "JetAuth".to_string(),
             hide_powered_by: true,
             footer_text: Some("© 2026 Taika 3D".to_string()),
             ..Default::default()
