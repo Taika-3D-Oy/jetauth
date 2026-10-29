@@ -99,7 +99,7 @@ Checks whether the authority has an initial superadmin or requires bootstrapping
     "idp_session_ttl_seconds": 86400
   }
   ```
-  * `default_theme.theme_preset` is validated against the known presets: `taika-dark`, `taika-light`, `glassmorphism`, `glassmorphic`, `glassmorphic-frost`, `cyberpunk`, `midnight-neon`, `minimal-noir`, `dark-luxury`, `neo-brutalist`, `default` (returns 400 otherwise).
+  * `default_theme.theme_preset` is validated against the known presets: `jetauth-dark`, `jetauth-light`, `glassmorphism`, `glassmorphic`, `glassmorphic-frost`, `cyberpunk`, `midnight-neon`, `minimal-noir`, `dark-luxury`, `neo-brutalist`, `default` (returns 400 otherwise).
   * `idp_session_ttl_seconds` must be between `300` (5 minutes) and `7776000` (90 days).
 * **Response**: `200 OK` (full settings model, as in `GET /api/settings`)
 

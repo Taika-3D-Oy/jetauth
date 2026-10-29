@@ -45,7 +45,7 @@ Pushing the wrong filename (e.g. a stale 13KB artifact) produces a cryptic "Serv
 
 ### Data layer: lattice-db
 
-All persistent state is stored via [lattice-db](https://github.com/Taika-3D-Oy/lattice-db), which runs as a co-located service inside the same WorkloadDeployment. Components talk to lattice-db over localhost TCP (`127.0.0.1:4080`). lattice-db persists data to NATS JetStream KV.
+All persistent state is stored via `jetcache` (formerly `lattice-db`), which runs as a co-located service inside the same WorkloadDeployment. Components talk to lattice-db over localhost TCP (`127.0.0.1:4080`). lattice-db persists data to NATS JetStream KV.
 
 ### KV bucket naming
 

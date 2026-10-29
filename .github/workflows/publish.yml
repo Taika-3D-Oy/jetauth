@@ -75,7 +75,8 @@ jobs:
           IMAGE_PREFIX: ${{ steps.prefix.outputs.prefix }}
         run: |
           components=(oidc-gateway password-hasher email-worker)
-          prefixes=("${IMAGE_PREFIX}" "ghcr.io/taika-3d-oy/lattice-id")
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          prefixes=("${IMAGE_PREFIX}" "ghcr.io/${owner_lc}/lattice-id")
           for prefix in "${prefixes[@]}"; do
             for comp in "${components[@]}"; do
               wasm="${comp//-/_}"

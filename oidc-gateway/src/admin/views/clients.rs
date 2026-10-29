@@ -189,8 +189,8 @@ pub fn render_new_client_modal() -> Markup {
                             label for="theme_preset" { "Theme Preset" }
                             select id="theme_preset" name="theme_preset" {
                                 option value="" { "(Inherit System Default)" }
-                                option value="taika-dark" { "Taika Dark" }
-                                option value="taika-light" { "Taika Light" }
+                                option value="jetauth-dark" { "JetAuth Dark" }
+                                option value="jetauth-light" { "JetAuth Light" }
                                 option value="glassmorphic" { "Glassmorphic" }
                                 option value="cyberpunk" { "Cyberpunk" }
                                 option value="minimal-noir" { "Minimal Noir" }
@@ -429,8 +429,8 @@ pub async fn render_client_detail_page(
                         label for="theme_preset" { "Theme Preset" }
                         select id="theme_preset" name="theme_preset" {
                             option value="" selected[current_preset.is_empty()] { "(Inherit System Default)" }
-                            option value="taika-dark" selected[current_preset == "taika-dark"] { "Taika Dark (Emerald & Slate)" }
-                            option value="taika-light" selected[current_preset == "taika-light"] { "Taika Light (Clean Minimalist)" }
+                            option value="jetauth-dark" selected[current_preset == "jetauth-dark"] { "JetAuth Dark (Emerald & Slate)" }
+                            option value="jetauth-light" selected[current_preset == "jetauth-light"] { "JetAuth Light (Clean Minimalist)" }
                             option value="glassmorphic" selected[current_preset == "glassmorphic"] { "Glassmorphic (Frosted Glass)" }
                             option value="cyberpunk" selected[current_preset == "cyberpunk"] { "Cyberpunk (Neon Cyan & Pink)" }
                             option value="minimal-noir" selected[current_preset == "minimal-noir"] { "Minimal Noir (Monochrome)" }

@@ -10,10 +10,9 @@ info:
     (`/authorize`, `/token`, `/userinfo`, etc.) are not specified here; they are described by
     the discovery documents at `/.well-known/openid-configuration` and
     `/.well-known/oauth-authorization-server`.
-  version: 2.0.0-rc.10
+  version: 2.0.0-rc.14
   contact:
-    name: Taika 3D Oy
-    url: https://github.com/Taika-3D-Oy/jetauth
+    name: JetAuth Contributors
 
 servers:
   - url: http://localhost:8000
@@ -1502,7 +1501,7 @@ components:
           example: false
         default_theme:
           $ref: '#/components/schemas/ClientTheme'
-          description: theme_preset is validated against the known presets (taika-dark, taika-light, glassmorphism, glassmorphic, glassmorphic-frost, cyberpunk, midnight-neon, minimal-noir, dark-luxury, neo-brutalist, default)
+          description: theme_preset is validated against the known presets (jetauth-dark, jetauth-light, glassmorphism, glassmorphic, glassmorphic-frost, cyberpunk, midnight-neon, minimal-noir, dark-luxury, neo-brutalist, default)
         idp_session_ttl_seconds:
           type: integer
           minimum: 300
@@ -1637,7 +1636,7 @@ components:
           example: Acme Portal
         theme_preset:
           type: string
-          enum: [taika-dark, taika-light, glassmorphic, cyberpunk, minimal-noir, neo-brutalist]
+          enum: [jetauth-dark, jetauth-light, glassmorphic, cyberpunk, minimal-noir, neo-brutalist]
           example: glassmorphic
         logo_url:
           type: string

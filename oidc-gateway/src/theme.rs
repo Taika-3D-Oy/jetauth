@@ -153,7 +153,7 @@ pub fn fallback_theme() -> ClientTheme {
         logo_url: None,
         logo_height: Some("48px".to_string()),
         favicon_url: None,
-        theme_preset: Some("taika-dark".to_string()),
+        theme_preset: Some("jetauth-dark".to_string()),
         primary_color: Some("#10b981".to_string()),
         primary_hover_color: Some("#059669".to_string()),
         background_color: Some("linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)".to_string()),
@@ -184,8 +184,8 @@ pub fn fallback_theme() -> ClientTheme {
 /// Theme preset names recognized by [`apply_preset`], including aliases.
 /// Anything else resolves to the default theme.
 pub const KNOWN_THEME_PRESETS: &[&str] = &[
-    "taika-dark",
-    "taika-light",
+    "jetauth-dark",
+    "jetauth-light",
     "glassmorphism",
     "glassmorphic",
     "glassmorphic-frost",
@@ -205,12 +205,12 @@ pub fn is_known_preset(name: &str) -> bool {
 /// Apply a preset template to a theme, populating any fields that are not explicitly overridden.
 pub fn apply_preset(preset_name: &str) -> ClientTheme {
     match preset_name {
-        "taika-dark" => ClientTheme {
+        "jetauth-dark" => ClientTheme {
             app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
-            theme_preset: Some("taika-dark".to_string()),
+            theme_preset: Some("jetauth-dark".to_string()),
             primary_color: Some("#10b981".to_string()),
             primary_hover_color: Some("#059669".to_string()),
             background_color: Some("linear-gradient(135deg, #090d16 0%, #0d1b2a 50%, #061e24 100%)".to_string()),
@@ -236,12 +236,12 @@ pub fn apply_preset(preset_name: &str) -> ClientTheme {
             help_url: None,
             custom_css: None,
         },
-        "taika-light" => ClientTheme {
+        "jetauth-light" => ClientTheme {
             app_name: "JetAuth".to_string(),
             logo_url: None,
             logo_height: Some("48px".to_string()),
             favicon_url: None,
-            theme_preset: Some("taika-light".to_string()),
+            theme_preset: Some("jetauth-light".to_string()),
             primary_color: Some("#059669".to_string()),
             primary_hover_color: Some("#047857".to_string()),
             background_color: Some("linear-gradient(135deg, #f0fdf4 0%, #f8fafc 50%, #ecfdf5 100%)".to_string()),
@@ -539,7 +539,7 @@ pub fn resolve_effective_theme(
                 .as_ref()
                 .and_then(|t| t.theme_preset.as_deref())
         })
-        .unwrap_or("taika-dark");
+        .unwrap_or("jetauth-dark");
 
     let base = apply_preset(preset_name);
 
@@ -787,8 +787,8 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_preset_taika_dark() {
-        let preset = apply_preset("taika-dark");
+    fn test_apply_preset_jetauth_dark() {
+        let preset = apply_preset("jetauth-dark");
         assert_eq!(preset.app_name, "JetAuth");
         assert_eq!(preset.primary_color, Some("#10b981".to_string()));
         assert_eq!(preset.border_radius, Some("14px".to_string()));
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn test_merge_themes_override() {
-        let base = apply_preset("taika-dark");
+        let base = apply_preset("jetauth-dark");
         let custom = ClientTheme {
             app_name: "My Custom App".to_string(),
             primary_color: Some("#ff0000".to_string()),
@@ -826,12 +826,12 @@ mod tests {
             app_name: "JetAuth".to_string(),
             powered_by_text: Some("Powered by JetAuth".to_string()),
             hide_powered_by: false,
-            footer_text: Some("© 2026 Taika 3D".to_string()),
+            footer_text: Some("© 2026 Acme Corp".to_string()),
             ..Default::default()
         };
         let footer = render_footer(&theme, Some(r#"<a href="/account">Account</a>"#));
         assert!(footer.contains("Powered by JetAuth"));
-        assert!(footer.contains("© 2026 Taika 3D"));
+        assert!(footer.contains("© 2026 Acme Corp"));
         assert!(footer.contains("Account"));
         assert!(!footer.contains("Lattice-ID"));
     }
@@ -841,12 +841,12 @@ mod tests {
         let theme = ClientTheme {
             app_name: "JetAuth".to_string(),
             hide_powered_by: true,
-            footer_text: Some("© 2026 Taika 3D".to_string()),
+            footer_text: Some("© 2026 Acme Corp".to_string()),
             ..Default::default()
         };
         let footer = render_footer(&theme, None);
         assert!(!footer.contains("Powered by"));
-        assert!(footer.contains("© 2026 Taika 3D"));
+        assert!(footer.contains("© 2026 Acme Corp"));
     }
 
     #[test]

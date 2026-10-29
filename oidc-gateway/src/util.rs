@@ -401,7 +401,7 @@ mod tests {
         // Prohibited hostnames
         assert!(is_safe_external_url("http://localhost/api").is_err());
         assert!(is_safe_external_url("http://sub.localhost/api").is_err());
-        assert!(is_safe_external_url("http://internal.taika3d.local/api").is_err());
+        assert!(is_safe_external_url("http://internal.corp.local/api").is_err());
         assert!(is_safe_external_url("http://service.default.internal:8080").is_err());
         assert!(
             is_safe_external_url("http://metadata.google.internal/computeMetadata/v1/").is_err()

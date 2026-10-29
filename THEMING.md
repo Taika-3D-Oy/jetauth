@@ -22,9 +22,9 @@ JetAuth features a fully customisable dynamic theming and white-labeling engine.
 Every authentication surface in JetAuth (Login, Passkey/MFA verification, Registration, OAuth Consent, Device Authorization, and Account Management) dynamically resolves its theme using a three-tier hierarchy:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ 1. Built-in Preset (e.g. taika-dark, glassmorphic, etc.) │
-└───────────────────────────┬─────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ 1. Built-in Preset (e.g. jetauth-dark, glassmorphic, etc.)│
+└───────────────────────────┬───────────────────────────────┘
                             │ (overridden by)
                             ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -37,7 +37,7 @@ Every authentication surface in JetAuth (Login, Passkey/MFA verification, Regist
 └─────────────────────────────────────────────────────────┘
 ```
 
-If a client does not specify a custom color or logo, it inherits the system global default theme. If no system global theme is configured, the built-in preset default (`taika-dark`) is used.
+If a client does not specify a custom color or logo, it inherits the system global default theme. If no system global theme is configured, the built-in preset default (`jetauth-dark`) is used.
 
 ---
 
@@ -47,8 +47,8 @@ You can select any of the 6 modern presets by setting `theme_preset` to its iden
 
 | Preset Name | Identifier | Style Description | Best For |
 | :--- | :--- | :--- | :--- |
-| **Taika Dark** | `taika-dark` | Emerald green (`#10b981`) & deep slate background (`#0b0f19`) with subtle elevation. | Production dark mode, developer tools, fintech |
-| **Taika Light** | `taika-light` | Crisp clean white background, indigo accents (`#2563eb`), refined light gray borders. | Enterprise SaaS, clean productivity apps |
+| **JetAuth Dark** | `jetauth-dark` | Emerald green (`#10b981`) & deep slate background (`#0b0f19`) with subtle elevation. | Production dark mode, developer tools, fintech |
+| **JetAuth Light** | `jetauth-light` | Crisp clean white background, indigo accents (`#2563eb`), refined light gray borders. | Enterprise SaaS, clean productivity apps |
 | **Glassmorphic** | `glassmorphic` | Translucent frosted glass (`backdrop-filter: blur(16px)`), violet/indigo glow, blurred shadows. | Modern AI apps, Web3, trendy consumer portals |
 | **Cyberpunk** | `cyberpunk` | High-contrast neon cyan (`#00f0ff`) and hot pink (`#ff003c`), futuristic dark grid. | Gaming, crypto, developer tools |
 | **Minimal Noir** | `minimal-noir` | Jet black (`#09090b`), pure white buttons (`#ffffff`), monochrome typography, hairline borders. | Luxury brands, design studios, minimalist products |
@@ -83,7 +83,7 @@ Full white-labeling can be achieved purely via theme configuration without chang
 
 The theme engine generates standard CSS variables on the `:root` pseudo-class. You can customize them individually or override them with `custom_css`:
 
-| CSS Variable | Theme Field | Description | Default (`taika-dark`) |
+| CSS Variable | Theme Field | Description | Default (`jetauth-dark`) |
 | :--- | :--- | :--- | :--- |
 | `--primary` | `primary_color` | Main brand color for primary buttons & active states | `#10b981` |
 | `--primary-hover` | `primary_hover_color` | Button hover & focus highlight color | `#059669` |

@@ -8,10 +8,9 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "2.0.0-rc.13"
-authors = ["Taika 3D Oy"]
+version = "2.0.0-rc.14"
+authors = ["JetAuth Contributors"]
 description = "NATS-native OIDC identity provider for wasmCloud and WebAssembly (formerly lattice-id)"
-repository = "https://github.com/Taika-3D-Oy/jetauth"
 license = "Apache-2.0"
 
 [workspace.dependencies]

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.14] - 2026-10-29
+
+### Changed
+
+- **Vendor-Neutral Theme Presets & Documentation**:
+  - Renamed built-in theme presets `jetauth-dark` (default) and `jetauth-light` across the theme engine, Admin UI, OpenAPI specification, and documentation.
+  - Sanitized remaining company/domain references in documentation, metadata, and unit tests to neutral placeholders (`auth.example.com`, `Acme Corp`).
+
 ## [2.0.0-rc.13] - 2026-10-29
 
 ### Added
@@ -106,7 +114,7 @@ This release remediates the findings of a comprehensive security audit of the OI
   - Added `set_active(bool)` support in Rhai scripting hooks, allowing automatic or conditional user activation during registration and login flows.
 - **Project Rebranding to `jetauth`**:
   - Rebranded `lattice-id` to **`jetauth`** across workspace manifests, deployment descriptors, build tooling, and documentation.
-  - Formally aligned with **`jetcache` 2.0** (`Taika-3D-Oy/jetcache`) and **`nats-wasip3` 1.0.0** (`Taika-3D-Oy/nats-wasip3`).
+  - Formally aligned with **`jetcache` 2.0** and **`nats-wasip3` 1.0.0**.
   - Preserved internal WIT package namespace identifiers (`lattice-id:crypto/password`, `lattice-id:notify/email`, `lattice-id:oidc`) to maintain 100% ABI compatibility with existing wasmCloud hosts and components.
 
 ### Storage Layer & `jetcache` 2.0 Integration
@@ -129,7 +137,7 @@ This release remediates the findings of a comprehensive security audit of the OI
 
 - **Cleaned Up Obsolete Interfaces & WIT Dependencies**:
   - Removed dead `wasmcloud:messaging` host interface configurations across all WorkloadDeployments (`workloaddeployment-local.yaml`, `workloaddeployment-local-prod.yaml`, `workloaddeployment-ghcr.yaml`, `workloaddeployment-eu.yaml`, `workloaddeployment-us.yaml`).
-  - Removed orphaned WIT dependency packages (`taika3d-ldb`, `taika3d-lid`, `wasmcloud-messaging-0.2.0`).
+  - Removed orphaned WIT dependency packages (`legacy-ldb`, `legacy-lid`, `wasmcloud-messaging-0.2.0`).
   - Removed obsolete and brittle Kind deployment scripts (`deploy-*.sh`) in favor of clean declarative WorkloadDeployment manifests (`deploy/workloaddeployment-*.yaml`) and documented setup.
 
 ### Code Health & Testing
@@ -341,7 +349,7 @@ This release remediates the findings of a comprehensive security audit of the OI
 ### Added
 
 - **Dynamic Theming & Modern Presets Engine**:
-  - Implemented dedicated theme engine (`theme.rs`) supporting 6 built-in presets: `taika-dark` (default), `taika-light`, `glassmorphic` (frosted glass blur), `cyberpunk` (neon cyan & pink grid), `minimal-noir` (luxury monochrome), and `neo-brutalist` (bold 3px black borders & hard shadows).
+  - Implemented dedicated theme engine (`theme.rs`) supporting 6 built-in presets: `jetauth-dark` (default), `jetauth-light`, `glassmorphic` (frosted glass blur), `cyberpunk` (neon cyan & pink grid), `minimal-noir` (luxury monochrome), and `neo-brutalist` (bold 3px black borders & hard shadows).
   - Dynamic resolution hierarchy: Built-in Base Preset $\rightarrow$ System Global Default Theme $\rightarrow$ Per-OAuth-Client Theme Override.
   - Automatic `:root` CSS variables generator for customizable colors, typography, card background, border, shadow, backdrop blur, and inputs.
   - Custom Google Fonts & Web Fonts loading via configurable `font_url` and `font_family`.
@@ -773,8 +781,3 @@ This release remediates the findings of a comprehensive security audit of the OI
 - RFC 8628 Device Authorization Grant.
 - Abuse-protection and rate-limiting component.
 - Crypto-vault component for key management.
-
-[1.2.1]: https://github.com/Taika-3D-Oy/lattice-id/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/Taika-3D-Oy/lattice-id/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/Taika-3D-Oy/lattice-id/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/Taika-3D-Oy/lattice-id/releases/tag/v1.0.0

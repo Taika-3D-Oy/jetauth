@@ -1,6 +1,6 @@
 # JetAuth Security Architecture & Defense-in-Depth Model
 
-This document outlines the **3-Tier Defense-in-Depth Security Model** protecting JetAuth (formerly Lattice-ID), its co-located storage layer ([jetcache](https://github.com/Taika-3D-Oy/jetcache), formerly Lattice-DB), and the messaging fabric (NATS JetStream).
+This document outlines the **3-Tier Defense-in-Depth Security Model** protecting JetAuth (formerly Lattice-ID), its co-located storage layer (**jetcache**, formerly Lattice-DB), and the messaging fabric (NATS JetStream).
 
 ---
 
@@ -8,8 +8,7 @@ This document outlines the **3-Tier Defense-in-Depth Security Model** protecting
 
 If you discover a security vulnerability in JetAuth, please report it privately:
 
-- **GitHub Advisory**: Use [GitHub Private Vulnerability Reporting](https://github.com/Taika-3D-Oy/jetauth/security/advisories/new).
-- **Email**: Send details and reproduction steps to `security@taika3d.com`.
+- **GitHub Advisory**: Use GitHub Private Vulnerability Reporting via the repository's **Security → Advisories** tab (`/security/advisories/new`).
 
 Please **do not** open public GitHub issues for security vulnerabilities. We will acknowledge receipt within 48 hours and coordinate responsible disclosure.
 

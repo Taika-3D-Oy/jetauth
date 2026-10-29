@@ -33,9 +33,9 @@ pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
                     div class="form-group" {
                         label for="default_theme_preset" { "Base Theme Preset" }
                         select id="default_theme_preset" name="default_theme_preset" {
-                            @let preset = default_theme.theme_preset.as_deref().unwrap_or("taika-dark");
-                            option value="taika-dark" selected[preset == "taika-dark"] { "Taika Dark (Emerald & Slate)" }
-                            option value="taika-light" selected[preset == "taika-light"] { "Taika Light (Clean Minimalist)" }
+                            @let preset = default_theme.theme_preset.as_deref().unwrap_or("jetauth-dark");
+                            option value="jetauth-dark" selected[preset == "jetauth-dark"] { "JetAuth Dark (Emerald & Slate)" }
+                            option value="jetauth-light" selected[preset == "jetauth-light"] { "JetAuth Light (Clean Minimalist)" }
                             option value="glassmorphic" selected[preset == "glassmorphic"] { "Glassmorphic (Frosted Glass & Vibrant Glow)" }
                             option value="cyberpunk" selected[preset == "cyberpunk"] { "Cyberpunk (Neon Cyan, Pink & Dark Grid)" }
                             option value="minimal-noir" selected[preset == "minimal-noir"] { "Minimal Noir (High-contrast Monochrome)" }
@@ -62,7 +62,7 @@ pub async fn render_settings_page(session: &AdminSession) -> Response<String> {
                     }
                     div class="form-group" {
                         label for="default_footer_text" { "Custom Footer / Copyright Notice" }
-                        input type="text" id="default_footer_text" name="default_footer_text" value=(default_theme.footer_text.unwrap_or_default()) placeholder="© 2026 Taika 3D. All rights reserved.";
+                        input type="text" id="default_footer_text" name="default_footer_text" value=(default_theme.footer_text.unwrap_or_default()) placeholder="© 2026 Acme Corp. All rights reserved.";
                     }
                 }
 

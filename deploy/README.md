@@ -3,7 +3,7 @@
 > **⚠️ DEV/INTEGRATION-TEST CONFIG — NOT FOR PRODUCTION.**
 > These manifests and configs are for integration testing and deployment simulation only. They run with no auth/TLS on NATS, dev secrets, `dev_mode` flags, and a `bootstrap_hook` that grants `set_superadmin(true)` to the first registrant while `allow_registration: "true"` is set. See SECURITY.md for production hardening.
 
-This directory contains declarative Kubernetes and wasmCloud manifests for deploying JetAuth alongside [jetcache](https://github.com/Taika-3D-Oy/jetcache).
+This directory contains declarative Kubernetes and wasmCloud manifests for deploying JetAuth alongside `jetcache`.
 
 ## Manifest Overview
 
@@ -33,7 +33,8 @@ JetAuth runs as a single wasmCloud `WorkloadDeployment` custom resource. The `je
 1. Configure your environment variables and apply `workloaddeployment-ghcr.yaml`:
 
 ```bash
-sed -e 's|__ISSUER_URL__|https://auth.example.com|' \
+sed -e 's|__GHCR_OWNER__|your-github-org|' \
+    -e 's|__ISSUER_URL__|https://auth.example.com|' \
     -e 's|__HOST__|auth.example.com|' \
     -e 's|__NATS_DATA_URL__|nats.default.svc.cluster.local:4222|' \
     -e 's|__EMAIL_PROVIDER__|log|' \

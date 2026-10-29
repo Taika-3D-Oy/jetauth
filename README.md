@@ -2,11 +2,11 @@
 
 JetAuth (formerly Lattice-ID) is a WebAssembly-native, NATS-powered OpenID Connect (OIDC) & OAuth 2.0 Identity Provider built for wasmCloud and modern cloud-native environments.
 
-Runs as a single wasmCloud WorkloadDeployment with [jetcache](https://github.com/Taika-3D-Oy/jetcache) (formerly lattice-db) co-located as a service — no extra database, no external daemon dependencies. Components communicate with jetcache over localhost TCP (`127.0.0.1:4080`), and jetcache persists and replicates all state directly into NATS JetStream KV.
+Runs as a single wasmCloud WorkloadDeployment with **jetcache** (formerly lattice-db) co-located as a service — no extra database, no external daemon dependencies. Components communicate with jetcache over localhost TCP (`127.0.0.1:4080`), and jetcache persists and replicates all state directly into NATS JetStream KV.
 
 ## Status
 
-**v2.0.0-rc.1** (Rebranded from `lattice-id` v1.13.0)
+**v2.0.0-rc.14** (Rebranded from `lattice-id` v1.13.0)
 
 - **Storage Layer & `jetcache` 2.0 Integration**:
   - High-performance native prefix scan operations (`kv_prefix` and `kv_prefix_keys`), eliminating N+1 round-trip latency on user listings, client listings, tenant memberships, consents, hooks, and audit logs.
@@ -49,7 +49,7 @@ Runs as a single wasmCloud WorkloadDeployment with [jetcache](https://github.com
 - `kind`, `kubectl`, `helm` for local Kubernetes clusters
 - `docker` for the local OCI registry
 - `curl` and `python3` for integration tests
-- Access to [jetcache](https://github.com/Taika-3D-Oy/jetcache) OCI images on GHCR (default: `ghcr.io/taika-3d-oy/jetcache/storage-service:v2.0.0-rc.1`)
+- Access to `jetcache/storage-service` OCI component images (or build locally)
 
 ```bash
 rustup target add wasm32-wasip2

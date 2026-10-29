@@ -4,7 +4,6 @@ edition.workspace = true
 version.workspace = true
 authors.workspace = true
 description = "Email delivery worker — exports lattice-id:notify/email interface"
-repository.workspace = true
 license.workspace = true
 
 [lib]
