@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.13] - 2026-10-29
+
+### Added
+
+- **RFC 8628 Device Flow Enabled on Built-in `lid-admin` Client**:
+  - Added `urn:ietf:params:oauth:grant-type:device_code` to `lid-admin`'s default `grant_types` and auto-initialized `lid-admin` on `/device/code` so superadmins can acquire short-lived (1-hour) Management API Bearer tokens from the CLI without static secrets.
+
+### Changed
+
+- **Out-of-Band Structured JSON Audit Logging**:
+  - `store::log_audit` now emits structured JSON audit events directly to container `stderr` via `logger::info("audit", ...)` for platform log ingestion rather than persisting unbounded `audit:*` records in NATS KV (`lid-audit`).
+  - Moved `hookver:{hook_id}:{version}` records from `lid-audit` to `lid-clients` alongside `hook:{id}` and retired the `lid-audit` KV bucket.
+- **Idempotent `ensure_admin_client`**:
+  - `store::ensure_admin_client` now compares the stored `lid-admin` client record before writing, avoiding redundant NATS KV writes on every `/authorize` and `/device/code` request when the stored configuration already matches.
+
 ## [2.0.0-rc.11] - 2026-10-21
 
 ### Breaking Changes

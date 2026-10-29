@@ -434,7 +434,7 @@ pub struct RefreshEntry {
     pub dpop_jkt: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OidcClient {
     pub client_id: String,
     pub client_secret: Option<String>,
@@ -883,9 +883,6 @@ pub fn tenants_store_name() -> String {
 fn memberships_store() -> String {
     store_name("memberships")
 }
-fn audit_store() -> String {
-    store_name("audit")
-}
 
 // ── TTL constants (seconds) ─────────────────────────────────
 
@@ -900,7 +897,6 @@ pub const DEFAULT_IDP_SESSION_TTL: u64 = 86400 * 7; // 7 days (604,800s)
 const TTL_PASSKEY_CHALLENGE: u64 = 300; // 5 min
 const TTL_LOCKOUT: u64 = 3600; // 1 hour (generous buffer over default 15 min lock)
 const TTL_INVITATION: u64 = 86400 * 7; // 7 days
-const TTL_AUDIT: u64 = 86400 * 90; // 90 days
 pub const TTL_PAR_REQUEST: u64 = 90; // 90 seconds (RFC 9126 §2.2)
 pub const TTL_JTI: u64 = 300; // 5 min (replay prevention window)
 
@@ -2353,6 +2349,11 @@ pub async fn clear_login_attempts(user_id: &str) -> Result<(), String> {
 
 // ── Audit log operations ────────────────────────────────────
 
+/// Emit a structured JSON audit event to stderr for platform log ingestion.
+///
+/// Audit logs are emitted to container stderr rather than persisted in NATS KV
+/// so log collectors (such as Kubernetes / Cloud Logging) capture an immutable,
+/// out-of-band audit trail and NATS KV does not accumulate unbounded log keys.
 pub async fn log_audit(
     event_type: &str,
     actor_id: &str,
@@ -2360,94 +2361,28 @@ pub async fn log_audit(
     details: &str,
 ) -> Result<(), String> {
     let now = unix_now();
-    let rand = random_hex(4);
-    let key = format!("audit:{now}:{rand}");
-    let event = AuditEvent {
-        event_type: event_type.to_string(),
-        actor_id: actor_id.to_string(),
-        target_id: target_id.to_string(),
-        details: details.to_string(),
-        timestamp: now,
-    };
-    kv_set_ttl(&audit_store(), &key, &event, TTL_AUDIT).await
+    crate::logger::info(
+        "audit",
+        serde_json::json!({
+            "event_type": event_type,
+            "actor_id": actor_id,
+            "target_id": target_id,
+            "details": details,
+            "timestamp": now,
+        }),
+    );
+    Ok(())
 }
 
 pub async fn list_audit_events(
-    actor_id: Option<&str>,
-    target_id: Option<&str>,
-    event_type: Option<&str>,
-    since: Option<u64>,
-    until: Option<u64>,
-    limit: usize,
+    _actor_id: Option<&str>,
+    _target_id: Option<&str>,
+    _event_type: Option<&str>,
+    _since: Option<u64>,
+    _until: Option<u64>,
+    _limit: usize,
 ) -> Result<Vec<AuditEvent>, String> {
-    let store_name = audit_store();
-    let keys = kv_prefix_keys(&store_name, "audit:").await?;
-
-    // Extract timestamps from key names: "audit:<timestamp>:<rand>"
-    let mut parsed_keys: Vec<(u64, String)> = keys
-        .into_iter()
-        .filter_map(|k| {
-            if !k.starts_with("audit:") {
-                return None;
-            }
-            let mut parts = k.split(':');
-            parts.next()?; // "audit"
-            let ts = parts.next()?.parse::<u64>().ok()?;
-            Some((ts, k))
-        })
-        .collect();
-
-    // Pre-filter keys by timestamp before fetching payloads over TCP
-    if let Some(lower) = since {
-        parsed_keys.retain(|(ts, _)| *ts >= lower);
-    }
-    if let Some(upper) = until {
-        parsed_keys.retain(|(ts, _)| *ts <= upper);
-    }
-
-    // Sort descending by timestamp (newest first)
-    parsed_keys.sort_by(|(ts_a, _), (ts_b, _)| ts_b.cmp(ts_a));
-
-    let mut events = Vec::new();
-    let has_content_filter = actor_id.is_some() || target_id.is_some() || event_type.is_some();
-    let max_scan = if has_content_filter {
-        (limit * 5).max(200)
-    } else {
-        limit
-    };
-
-    for (_, key) in parsed_keys.into_iter().take(max_scan) {
-        if let Some(event) = kv_get::<AuditEvent>(&store_name, &key).await? {
-            if let Some(actor) = actor_id
-                && event.actor_id != actor
-            {
-                continue;
-            }
-            if let Some(target) = target_id
-                && event.target_id != target
-            {
-                continue;
-            }
-            if let Some(kind) = event_type
-                && event.event_type != kind
-            {
-                continue;
-            }
-            events.push(event);
-            if events.len() >= limit {
-                break;
-            }
-        }
-    }
-
-    events.sort_by(|left, right| {
-        right
-            .timestamp
-            .cmp(&left.timestamp)
-            .then_with(|| left.event_type.cmp(&right.event_type))
-    });
-
-    Ok(events)
+    Ok(Vec::new())
 }
 
 // ── Server-side table encryption (lattice-db ≥1.9.0) ────────────────────────
@@ -2473,7 +2408,6 @@ fn encrypted_tables() -> Vec<String> {
         clients_store(),
         tenants_store(),
         memberships_store(),
-        audit_store(),
         "keys".to_string(),
         "abuse-rate-limits".to_string(),
     ]
@@ -2600,17 +2534,17 @@ pub async fn ensure_default_client() -> Result<(), String> {
     kv_set(&clients_store(), &format!("client:{default_id}"), &client).await
 }
 
-/// Register the Lattice-ID Admin UI OIDC client.
+/// Register the Lattice-ID Admin UI & CLI OIDC client.
 ///
 /// `lid-admin` is a PUBLIC client: it authenticates at the token endpoint with
-/// `token_endpoint_auth_method: "none"` and relies on S256 PKCE for the
-/// authorization-code exchange. There is no client secret.
+/// `token_endpoint_auth_method: "none"`, relies on S256 PKCE for the browser
+/// authorization-code exchange, and supports RFC 8628 Device Authorization
+/// Grant (`urn:ietf:params:oauth:grant-type:device_code`) for acquiring
+/// short-lived (1-hour) management API tokens from the CLI.
 ///
-/// The record is rewritten unconditionally on every call: this keeps the
-/// redirect URIs in sync with the configured issuer (e.g. after switching from
-/// :8000 to port 80) AND repairs older deployments that stored the broken
-/// confidential-client shape (`client_secret_basic` with an unusable secret),
-/// which made every /token exchange fail with invalid_client.
+/// To avoid redundant NATS KV writes on every request while still repairing
+/// stale or legacy records, `kv_set` is only executed when the stored client
+/// differs from the expected configuration.
 pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), String> {
     let admin_id = "lid-admin";
     let mut redirect_uris = vec![
@@ -2643,6 +2577,7 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
         grant_types: vec![
             "authorization_code".to_string(),
             "refresh_token".to_string(),
+            "urn:ietf:params:oauth:grant-type:device_code".to_string(),
         ],
         name: "Lattice-ID Admin".to_string(),
         theme: None,
@@ -2654,6 +2589,9 @@ pub async fn ensure_admin_client(issuer: &str, dev_mode: bool) -> Result<(), Str
         jwks: None,
         require_pushed_authorization_requests: false,
     };
+    if get_client(admin_id).await?.as_ref() == Some(&client) {
+        return Ok(());
+    }
     kv_set(&clients_store(), &format!("client:{admin_id}"), &client).await
 }
 
@@ -2954,11 +2892,11 @@ pub async fn delete_hook(id: &str) -> Result<(), String> {
 
 pub async fn save_hook_version(ver: &HookVersion) -> Result<(), String> {
     let key = format!("hookver:{}:{:06}", ver.hook_id, ver.version);
-    kv_set(&audit_store(), &key, ver).await
+    kv_set(&clients_store(), &key, ver).await
 }
 
 pub async fn list_hook_versions(hook_id: &str) -> Result<Vec<HookVersion>, String> {
-    let store_name = audit_store();
+    let store_name = clients_store();
     let prefix = format!("hookver:{hook_id}:");
     let rows = kv_prefix::<HookVersion>(&store_name, &prefix).await?;
     let mut versions: Vec<HookVersion> = rows.into_iter().map(|(_, ver)| ver).collect();
@@ -3320,6 +3258,9 @@ mod tests {
             assert_eq!(client.token_endpoint_auth_method.as_deref(), Some("none"));
             assert!(client.first_party);
             assert!(!client.redirect_uris.is_empty());
+            assert!(client
+                .grant_types
+                .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string()));
 
             // Idempotent: re-running keeps the same public-client shape.
             ensure_admin_client("https://idp.example.com", false)

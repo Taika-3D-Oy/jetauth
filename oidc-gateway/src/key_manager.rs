@@ -894,12 +894,12 @@ mod tests {
                     .any(|k| k["kid"] == old_kid && k["status"] == "retired")
             );
             assert!(keys.iter().all(|k| k.get("d").is_none()));
-            // Audit event was logged.
+            // Audit events are emitted to stderr (GKE Cloud Logging) rather than stored in KV.
             let audit =
                 crate::store::list_audit_events(None, None, Some("keys_rotated"), None, None, 10)
                     .await
                     .unwrap();
-            assert!(!audit.is_empty());
+            assert!(audit.is_empty());
         });
     }
 }

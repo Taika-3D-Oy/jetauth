@@ -26,7 +26,7 @@ Security in JetAuth is enforced across three distinct, complementary layers. No 
  │    • FIDO2 / WebAuthn Passkey (ES256) signature validation & anti-clone │
  │    • PKCE S256 challenge verification (RFC 7636)                        │
  │    • Refresh token family rotation with automated reuse detection       │
- │    • Append-only semantic audit logging (lid-audit)                     │
+ │    • Out-of-band structured JSON audit logging (stderr / log sink)      │
  └────────────────────────────────────┬────────────────────────────────────┘
                                       │ Mutual TLS 1.3 in transit + Auth
  ┌────────────────────────────────────▼────────────────────────────────────┐
@@ -74,24 +74,22 @@ The application layer implements zero-trust identity verification, cryptographic
 - **Pushed Authorization Requests (PAR, RFC 9126)**: Allows confidential and public clients to push authorization parameters directly via authenticated backchannel (`POST /connect/par`), returning a short-lived (90s), single-use `request_uri`.
 - **Private Key JWT Authentication (RFC 7523)**: Supports asymmetric key authentication (`private_key_jwt` with RS256/ES256) across token, PAR, revocation, and introspection endpoints, eliminating the need for shared static secrets.
 
-### 2.4 Semantic Audit Trail (`lid-audit`)
-Every administrative action, authentication attempt, and client modification is recorded to an append-only NATS JetStream stream named `lid-audit`:
+### 2.4 Semantic Audit Trail (Structured JSON Log Stream)
+Every administrative action, authentication attempt, and client modification is emitted as a structured JSON audit record (`"message": "audit"`) to container `stderr` for out-of-band ingestion by platform log collectors (e.g. Kubernetes / Cloud Logging):
 - **Event Schema**:
   ```json
   {
-    "id": "audit_evt_x912k...",
-    "timestamp": 1787736817,
+    "timestamp": "1787736817",
+    "level": "INFO",
+    "service": "oidc-gateway",
+    "message": "audit",
     "event_type": "client_updated | consent_approved | login_success | passkey_registered",
     "actor_id": "user_l8h88sbfo2wyai2x",
-    "actor_ip": "10.244.1.42",
     "target_id": "client_msbe878x1efxdfl6",
-    "details": {
-      "scopes": ["openid", "profile", "email"],
-      "first_party": true
-    }
+    "details": "updated client configuration"
   }
   ```
-- **Non-Repudiation**: Application-level auditing captures end-user identity, IP address, exact diffs, and business intent that cannot be determined at the raw packet/transport level.
+- **Non-Repudiation**: Out-of-band log collection isolates audit records from application state storage so an application instance cannot retroactively alter or delete prior audit entries.
 
 ---
 
@@ -108,7 +106,7 @@ NATS users and accounts are partitioned so that application services cannot acce
    - **Subscribe Permissions**: Allowed on `$KV.lid-*.*`, `ldb.>`, and JetStream internal inbox replies (`_INBOX.>`).
 2. **Standard Microservices / Public Pods**:
    - Explicitly **denied** `pub` and `sub` on any `$KV.lid-*.*` or `lid.>` subjects.
-   - Cannot read or write identity data directly; all interactions must occur via standard OIDC HTTPS endpoints (`https://us.auth.taikavision.com/oauth/v2/...`).
+   - Cannot read or write identity data directly; all interactions must occur via standard OIDC HTTPS endpoints (`https://auth.example.com/oauth/v2/...`).
 
 ### 3.2 NATS Server Security Configuration (`nats.conf` Blueprint)
 
@@ -245,6 +243,6 @@ The physical and infrastructure layer guarantees data durability, physical secur
 | **Physical Disk / Snapshot Theft** | Tier 3 (Infrastructure) | All disk blocks encrypted at rest with AES-256; snapshots are unreadable without cloud KMS keys. |
 | **Compromised Pod in Cluster** | Tier 2 (NATS ACLs & NetPol) | NetworkPolicies block TCP connections to NATS; NATS ACLs reject unauthorized pub/sub on `$KV.lid-*`. |
 | **Direct NATS State Inspection** | Tier 1 (Lattice-DB) | High-sensitivity tables (`users`, `credentials`) are stored as AES-256-GCM ciphertext in memory before hitting NATS. |
-| **Unauthorized Client / User Edit** | Tier 1 (Lattice-ID) | Operations require Superadmin OIDC session or Bearer token; all mutations are recorded to append-only `lid-audit`. |
+| **Unauthorized Client / User Edit** | Tier 1 (Lattice-ID) | Operations require Superadmin OIDC session or Bearer token; all mutations are emitted to the structured audit log stream. |
 | **Stolen Refresh Token Replay** | Tier 1 (Token Engine) | Refresh token family reuse detection immediately terminates all active sessions for that token family. |
 | **Man-in-the-Middle (MitM) Attack** | Tier 1 & 2 (TLS / PKCE / DPoP) | Mutual TLS 1.3 in transit, PKCE S256 challenge validation, and DPoP proof-of-possession (RFC 9449). |

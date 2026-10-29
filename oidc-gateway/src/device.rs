@@ -74,6 +74,10 @@ pub async fn start(
         _ => {}
     }
 
+    if client_id == "lid-admin" {
+        let _ = store::ensure_admin_client(issuer, false).await;
+    }
+
     // RFC 8628 §3.1: the client authentication requirements of RFC 6749 §2.3
     // apply — confidential clients MUST authenticate. The same authenticator as
     // the token endpoint is used (client_secret_basic via the Authorization

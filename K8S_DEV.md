@@ -49,7 +49,7 @@ All persistent state is stored via [lattice-db](https://github.com/Taika-3D-Oy/l
 
 ### KV bucket naming
 
-Buckets are created by lattice-db on first access. Table names correspond to KV bucket names: `lid-users`, `lid-user-idx`, `lid-sessions`, `lid-clients`, `lid-tenants`, `lid-memberships`, `lid-audit`, `lid-keys`, `lid-abuse-rate-limits`, `lid-vault`. The `lid-` prefix comes from `LDB_INSTANCE=lid` set on the storage-service deployment.
+Buckets are created by lattice-db on first access. Table names correspond to KV bucket names: `lid-users`, `lid-user-idx`, `lid-sessions`, `lid-clients`, `lid-tenants`, `lid-memberships`, `lid-keys`, `lid-abuse-rate-limits`, `lid-vault`. The `lid-` prefix comes from `LDB_INSTANCE=lid` set on the storage-service deployment.
 
 ### Service components and wasi:cli/run
 
