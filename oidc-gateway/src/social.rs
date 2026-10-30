@@ -440,7 +440,7 @@ fn verify_es256(token: &str, kid: Option<&str>, jwks: &serde_json::Value) -> Res
         .decode(parts[2])
         .map_err(|e| format!("ES256 signature decode: {e}"))?;
     let sig = EcSig::from_der(&sig_bytes)
-        .or_else(|_| EcSig::from_bytes(sig_bytes.as_slice().into()))
+        .or_else(|_| EcSig::from_slice(&sig_bytes))
         .map_err(|e| format!("bad ES256 signature: {e}"))?;
 
     let keys = jwks

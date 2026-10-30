@@ -176,7 +176,7 @@ async fn load_rsa_from_db(name: &str) -> Result<Option<StoredKey>, String> {
 /// Create a fresh RSA key under `name`, or adopt the record already stored
 /// there if a concurrent writer won the create race.
 async fn create_or_load_rsa_key(name: &str) -> Result<StoredKey, String> {
-    let mut rng = p256::elliptic_curve::rand_core::OsRng;
+    let mut rng = rand_core::OsRng;
     let private_key =
         RsaPrivateKey::new(&mut rng, 2048).map_err(|e| format!("RSA gen failed: {e}"))?;
     let public_key = RsaPublicKey::from(&private_key);
@@ -241,10 +241,12 @@ async fn load_ec_from_db(name: &str) -> Result<Option<StoredEcKey>, String> {
 }
 
 async fn create_or_load_ec_key(name: &str) -> Result<StoredEcKey, String> {
-    let sk = EcSigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    use p256::elliptic_curve::Generate;
+
+    let sk = EcSigningKey::generate();
     let scalar_bytes: Vec<u8> = sk.to_bytes().to_vec();
     let vk = sk.verifying_key();
-    let point = vk.to_encoded_point(false);
+    let point = vk.to_sec1_point(false);
     let kid = {
         use sha2::Digest;
         let hash = Sha256::digest(point.as_bytes());
@@ -277,14 +279,13 @@ fn stored_ec_to_signing_key(stored: &StoredEcKey) -> Result<EcSigningKey, String
     let scalar_bytes = URL_SAFE_NO_PAD
         .decode(&stored.d)
         .map_err(|e| format!("decode EC key: {e}"))?;
-    EcSigningKey::from_bytes(scalar_bytes.as_slice().into())
-        .map_err(|e| format!("parse EC key: {e}"))
+    EcSigningKey::from_slice(&scalar_bytes).map_err(|e| format!("parse EC key: {e}"))
 }
 
 fn ec_public_jwk(stored: &StoredEcKey) -> Result<serde_json::Value, String> {
     let sk = stored_ec_to_signing_key(stored)?;
     let vk = sk.verifying_key();
-    let point = vk.to_encoded_point(false);
+    let point = vk.to_sec1_point(false);
     let coords = point.coordinates();
     let (x_bytes, y_bytes) = match coords {
         p256::elliptic_curve::sec1::Coordinates::Uncompressed { x, y } => (x, y),

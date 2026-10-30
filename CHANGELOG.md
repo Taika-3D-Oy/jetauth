@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.16] - 2026-10-30
+
+### Fixed
+
+- **Release Pipeline**:
+  - Added the missing repository checkout to the GitHub Release job so native CLI artifacts can be attached to tagged releases.
+- **Dependency Security**:
+  - Upgraded `p256` to 0.14 and `crypto-bigint` to 0.7.10, resolving RUSTSEC-2026-0387 and migrating the affected ECDSA, SEC1, RSA-verification, and key-generation call sites.
+
 ## [2.0.0-rc.15] - 2026-10-30
 
 ### Added

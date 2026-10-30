@@ -157,13 +157,13 @@ mod tests {
     use super::*;
     use p256::ecdsa::SigningKey;
     use p256::ecdsa::signature::Signer;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     #[test]
     fn test_dpop_proof_validation() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
-        let encoded_point = verifying_key.to_encoded_point(false);
+        let encoded_point = verifying_key.to_sec1_point(false);
         let x_b64 = URL_SAFE_NO_PAD.encode(encoded_point.x().unwrap());
         let y_b64 = URL_SAFE_NO_PAD.encode(encoded_point.y().unwrap());
 

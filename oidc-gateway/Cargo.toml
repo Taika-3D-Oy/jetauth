@@ -28,7 +28,7 @@ rsa = { version = "0.9", default-features = false, features = ["sha2"] }
 num-bigint-dig = { version = "0.8", default-features = false }
 subtle = { version = "2.5", default-features = false }
 rhai = { version = "1", default-features = false, features = ["std"] }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 ciborium = { version = "0.2", default-features = false }
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 maud = "0.26"

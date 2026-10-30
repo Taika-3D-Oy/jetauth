@@ -6,7 +6,7 @@ Runs as a single wasmCloud WorkloadDeployment with **jetcache** (formerly lattic
 
 ## Status
 
-**v2.0.0-rc.15** (Rebranded from `lattice-id` v1.13.0)
+**v2.0.0-rc.16** (Rebranded from `lattice-id` v1.13.0)
 
 - **Storage Layer & `jetcache` 2.0 Integration**:
   - High-performance native prefix scan operations (`kv_prefix` and `kv_prefix_keys`), eliminating N+1 round-trip latency on user listings, client listings, tenant memberships, consents, hooks, and audit logs.

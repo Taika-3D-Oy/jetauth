@@ -5,6 +5,7 @@ use p256::ecdsa::{
 };
 use rsa::RsaPublicKey;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
+use rsa::signature::Verifier as RsaVerifier;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -110,7 +111,7 @@ pub fn verify(
 
     let mut last_err = String::new();
     for vk in &candidates {
-        match vk.verify(message.as_bytes(), &sig) {
+        match RsaVerifier::verify(**vk, message.as_bytes(), &sig) {
             Ok(()) => {
                 let claims: serde_json::Value = serde_json::from_slice(
                     &URL_SAFE_NO_PAD
@@ -224,8 +225,7 @@ pub fn verify_jwt_with_jwk(
             let verifier = VerifyingKey::<Sha256>::new(pub_key);
             let sig = Signature::try_from(sig_bytes.as_slice())
                 .map_err(|e| format!("bad RS256 signature: {e}"))?;
-            verifier
-                .verify(message.as_bytes(), &sig)
+            RsaVerifier::verify(&verifier, message.as_bytes(), &sig)
                 .map_err(|e| format!("RS256 verification failed: {e}"))?;
         }
         "ES256" => {
@@ -250,8 +250,8 @@ pub fn verify_jwt_with_jwk(
             let vk = EcVerifyingKey::from_sec1_bytes(&point)
                 .map_err(|e| format!("invalid EC key: {e}"))?;
             // JWS (RFC 7518 §3.4) mandates raw R||S encoding — no DER fallback
-            let sig = EcSig::from_bytes(sig_bytes.as_slice().into())
-                .map_err(|e| format!("bad ES256 signature: {e}"))?;
+            let sig =
+                EcSig::from_slice(&sig_bytes).map_err(|e| format!("bad ES256 signature: {e}"))?;
             EcVerifier::verify(&vk, message.as_bytes(), &sig)
                 .map_err(|e| format!("ES256 verification failed: {e}"))?;
         }
@@ -368,11 +368,11 @@ mod tests {
     fn test_verify_jwt_with_jwk_es256() {
         use p256::ecdsa::SigningKey;
         use p256::ecdsa::signature::Signer;
-        use p256::elliptic_curve::rand_core::OsRng;
+        use p256::elliptic_curve::Generate;
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
-        let encoded_point = verifying_key.to_encoded_point(false);
+        let encoded_point = verifying_key.to_sec1_point(false);
         let x_b64 = URL_SAFE_NO_PAD.encode(encoded_point.x().unwrap());
         let y_b64 = URL_SAFE_NO_PAD.encode(encoded_point.y().unwrap());
 
