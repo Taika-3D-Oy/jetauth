@@ -95,7 +95,7 @@ jobs:
         with:
           pattern: jetauth-*
           path: dist
-          merge: true
+          merge-multiple: true
 
       - name: Create GitHub release
         env:
