@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.15] - 2026-10-30
+
+### Added
+
+- **Native `jetauth` Management CLI**:
+  - Added browser-based RFC 8628 device login with SSO/MFA support, automatic refresh-token rotation, secure OS credential storage, headless file storage, and multiple issuer profiles.
+  - Added typed commands for clients, tenants, users, identity providers, hooks, signing keys, settings, audit logs, MFA, and passkeys, plus a raw `jetauth api` command for every Management API endpoint.
+  - Added table/JSON output, CI access-token support, destructive-action confirmation, and distinct exit codes.
+- **CLI Release Pipeline**:
+  - Added tag-triggered crates.io publishing for `jetauth-cli` and native Linux, macOS, and Windows binaries on GitHub Releases.
+  - Added crates.io packaging dry runs and platform keyring build dependencies to CI.
+
+### Changed
+
+- Restricted crates.io publishing to `jetauth-cli`; internal WASM component crates now explicitly disable publishing while GHCR component releases remain unchanged.
+- Made WASM build targets explicit so native CLI commands build for the host by default.
+
 ## [2.0.0-rc.14] - 2026-10-29
 
 ### Changed

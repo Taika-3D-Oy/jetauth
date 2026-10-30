@@ -6,7 +6,7 @@ Runs as a single wasmCloud WorkloadDeployment with **jetcache** (formerly lattic
 
 ## Status
 
-**v2.0.0-rc.14** (Rebranded from `lattice-id` v1.13.0)
+**v2.0.0-rc.15** (Rebranded from `lattice-id` v1.13.0)
 
 - **Storage Layer & `jetcache` 2.0 Integration**:
   - High-performance native prefix scan operations (`kv_prefix` and `kv_prefix_keys`), eliminating N+1 round-trip latency on user listings, client listings, tenant memberships, consents, hooks, and audit logs.
@@ -40,6 +40,7 @@ Runs as a single wasmCloud WorkloadDeployment with **jetcache** (formerly lattic
 - `oidc-gateway`: HTTP OIDC surface, management API, rate limiting, key management, region routing, and server-side rendered (SSR) Maud + HTMX admin panel
 - `password-hasher`: Argon2id worker (SIMD-accelerated, imported via WIT)
 - `email-worker`: email delivery (log for dev, AWS SES for production, imported via WIT)
+- `jetauth-cli`: native `jetauth` management CLI with browser-based device login, secure credential storage, profiles, and Management API commands ([documentation](jetauth-cli/README.md))
 
 ## Prerequisites
 
@@ -94,9 +95,19 @@ bootstrap_hook: |
 ## Build And Check
 
 ```bash
-cargo build --workspace --target wasm32-wasip2
+cargo build --workspace --exclude jetauth-cli --target wasm32-wasip2
 cargo test --workspace
+cargo build -p jetauth-cli --release
 ```
+
+## Releases
+
+Tag pushes matching `v*` publish two distinct artifact types:
+
+- GHCR receives the `oidc-gateway`, `password-hasher`, and `email-worker` WASM components.
+- crates.io receives only `jetauth-cli`; the GitHub release also includes native Linux, macOS, and Windows binaries.
+
+The internal WASM crates have publishing disabled. Legacy storage client crates are not part of this repository's release pipeline. Publishing to crates.io requires the `CARGO_REGISTRY_TOKEN` GitHub Actions secret.
 
 ## Integration Tests
 

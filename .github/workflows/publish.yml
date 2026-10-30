@@ -30,6 +30,9 @@ jobs:
         with:
           targets: wasm32-wasip2
 
+      - name: Install D-Bus development files
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: "false"
@@ -67,7 +70,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build workspace (wasip2 release)
-        run: cargo build --workspace --target wasm32-wasip2 --release
+        run: cargo build --workspace --exclude jetauth-cli --target wasm32-wasip2 --release
 
       - name: Push components to GHCR
         env:

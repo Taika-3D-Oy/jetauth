@@ -40,7 +40,7 @@ spec:
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
         - name: oidc-gateway
-          image: ghcr.io/__GHCR_OWNER__/jetauth/oidc-gateway:v2.0.0-rc.14
+          image: ghcr.io/__GHCR_OWNER__/jetauth/oidc-gateway:v2.0.0-rc.15
           imagePullPolicy: Always
           maxInvocations: 100
           localResources:
@@ -48,11 +48,11 @@ spec:
               config:
                 issuer_url: __ISSUER_URL__
         - name: password-hasher
-          image: ghcr.io/__GHCR_OWNER__/jetauth/password-hasher:v2.0.0-rc.14
+          image: ghcr.io/__GHCR_OWNER__/jetauth/password-hasher:v2.0.0-rc.15
           imagePullPolicy: Always
           maxInvocations: 8
         - name: email-worker
-          image: ghcr.io/__GHCR_OWNER__/jetauth/email-worker:v2.0.0-rc.14
+          image: ghcr.io/__GHCR_OWNER__/jetauth/email-worker:v2.0.0-rc.15
           imagePullPolicy: Always
           maxInvocations: 10
       hostInterfaces:

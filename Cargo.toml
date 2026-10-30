@@ -3,15 +3,17 @@ members = [
     "password-hasher",
     "oidc-gateway",
     "email-worker",
+    "jetauth-cli",
 ]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "2.0.0-rc.14"
+version = "2.0.0-rc.15"
 authors = ["JetAuth Contributors"]
 description = "NATS-native OIDC identity provider for wasmCloud and WebAssembly (formerly lattice-id)"
 license = "Apache-2.0"
+repository = "https://github.com/Taika-3D-Oy/jetauth"
 
 [workspace.dependencies]
 wit-bindgen = { version = "0.57", default-features = false, features = ["async", "async-spawn", "macros"] }

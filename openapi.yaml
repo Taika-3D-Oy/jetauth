@@ -10,7 +10,7 @@ info:
     (`/authorize`, `/token`, `/userinfo`, etc.) are not specified here; they are described by
     the discovery documents at `/.well-known/openid-configuration` and
     `/.well-known/oauth-authorization-server`.
-  version: 2.0.0-rc.14
+  version: 2.0.0-rc.15
   contact:
     name: JetAuth Contributors
 

@@ -22,6 +22,9 @@ jobs:
           targets: wasm32-wasip2
           components: clippy, rustfmt
 
+      - name: Install D-Bus development files
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: "false"
@@ -35,5 +38,8 @@ jobs:
       - name: Run unit tests (host target)
         run: cargo test --workspace --target "$(rustc -vV | grep host | awk '{print $2}')"
 
+      - name: Check jetauth-cli crate packaging
+        run: cargo publish -p jetauth-cli --dry-run --locked
+
       - name: Build WebAssembly components (wasip2 release)
-        run: cargo build --workspace --target wasm32-wasip2 --release
+        run: cargo build --workspace --exclude jetauth-cli --target wasm32-wasip2 --release
