@@ -9,6 +9,9 @@ metadata:
 spec:
   replicas: 1
   deployPolicy: RollingUpdate
+  kubernetes:
+    service:
+      name: jetauth
   template:
     labels:
       app.kubernetes.io/name: jetauth
@@ -44,15 +47,17 @@ spec:
           maxInvocations: 10
       hostInterfaces:
         - namespace: wasi
-          package: http
+          package: sockets
           interfaces:
-            - incoming-handler
-          config:
-            host: "localhost"
+            - tcp
+            - ip-name-lookup
         - namespace: wasi
           package: http
           interfaces:
+            - incoming-handler
             - outgoing-handler
+          config:
+            host: "localhost"
         - namespace: wasi
           package: config
           interfaces:

@@ -60,6 +60,14 @@ pub enum Command {
         #[command(subcommand)]
         command: IdpsCommand,
     },
+    Saml {
+        #[command(subcommand)]
+        command: SamlCommand,
+    },
+    Scim {
+        #[command(subcommand)]
+        command: ScimCommand,
+    },
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
@@ -228,6 +236,47 @@ pub enum IdpsCommand {
     },
     Delete {
         idp_id: String,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum SamlCommand {
+    List,
+    Get {
+        sp_id: String,
+    },
+    Create {
+        #[arg(long, allow_hyphen_values = true)]
+        input: String,
+    },
+    Update {
+        sp_id: String,
+        #[arg(long, allow_hyphen_values = true)]
+        input: String,
+    },
+    Delete {
+        sp_id: String,
+    },
+    RotateKey,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum ScimCommand {
+    List,
+    Create {
+        #[arg(long, allow_hyphen_values = true)]
+        input: String,
+    },
+    Update {
+        connection_id: String,
+        #[arg(long, allow_hyphen_values = true)]
+        input: String,
+    },
+    Delete {
+        connection_id: String,
+    },
+    RotateToken {
+        connection_id: String,
     },
 }
 

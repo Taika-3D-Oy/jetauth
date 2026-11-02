@@ -3,10 +3,12 @@ pub mod static_assets;
 pub mod views;
 
 use crate::admin::layout::AdminSession;
+use crate::error::ApiError;
 use crate::services::authz::role_level;
 use crate::services::{
     Caller, clients as client_service, hooks as hook_service, idps as idp_service,
-    settings as settings_service, tenants as tenant_service, users as user_service,
+    saml as saml_service, scim as scim_service, settings as settings_service,
+    tenants as tenant_service, users as user_service,
 };
 use crate::store::{self, AccountSession, ClientTheme, User};
 use crate::util::{form_value, parse_form, parse_query};
@@ -120,6 +122,8 @@ pub async fn handle_admin_route(
         "/admin/settings",
         "/admin/clients",
         "/admin/identity-providers",
+        "/admin/saml",
+        "/admin/scim",
         "/admin/audit",
     ];
     let is_global_route = SUPERADMIN_PREFIXES
@@ -321,6 +325,192 @@ pub async fn handle_admin_route(
                 user_tenants.insert(u.id.clone(), tenants);
             }
             html_response(views::users::render_users_table(&filtered, &user_tenants).into_string())
+        }
+
+        // ── SAML Applications ──
+        (&Method::GET, "/admin/saml") => views::enterprise::render_saml_page(&session).await,
+        (&Method::GET, "/admin/saml/new") => views::enterprise::render_saml_form(&session, None),
+        (&Method::GET, "/admin/saml/edit") => {
+            let query = path.split_once('?').map(|(_, value)| value).unwrap_or("");
+            let params = parse_query(query);
+            let id = form_value(&params, "id").unwrap_or("");
+            match store::get_saml_service_provider(id).await {
+                Ok(Some(sp)) => views::enterprise::render_saml_form(&session, Some(&sp)),
+                _ => error_response(StatusCode::NOT_FOUND, "SAML application not found"),
+            }
+        }
+        (&Method::POST, "/admin/saml") => {
+            let form = parse_form(body);
+            let mappings = form_value(&form, "attribute_mappings")
+                .unwrap_or("")
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(name, source)| (name.trim().to_string(), source.trim().to_string()))
+                .filter(|(name, source)| !name.is_empty() && !source.is_empty())
+                .collect();
+            let params = saml_service::CreateSamlSpParams {
+                name: form_value(&form, "name").unwrap_or("").to_string(),
+                entity_id: form_value(&form, "entity_id").unwrap_or("").to_string(),
+                acs_urls: form_value(&form, "acs_urls")
+                    .unwrap_or("")
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                name_id_format: form_value(&form, "name_id_format").map(str::to_string),
+                attribute_mappings: mappings,
+                request_signing_certificate: form_value(&form, "request_signing_certificate")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                theme: None,
+            };
+            let caller = Caller::from_admin_session(&session).await;
+            match saml_service::create_service_provider(&caller, params).await {
+                Ok(_) => redirect_response("/admin/saml"),
+                Err(e) => service_error(e, "Failed to create SAML application"),
+            }
+        }
+        (&Method::POST, "/admin/saml/update") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let current = store::get_saml_service_provider(id).await.ok().flatten();
+            let params = saml_service::UpdateSamlSpParams {
+                name: form_value(&form, "name").map(str::to_string),
+                acs_urls: Some(
+                    form_value(&form, "acs_urls")
+                        .unwrap_or("")
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                ),
+                enabled: None,
+                name_id_format: form_value(&form, "name_id_format").map(str::to_string),
+                attribute_mappings: Some(
+                    form_value(&form, "attribute_mappings")
+                        .unwrap_or("")
+                        .lines()
+                        .filter_map(|line| line.split_once('='))
+                        .map(|(name, source)| (name.trim().to_string(), source.trim().to_string()))
+                        .filter(|(name, source)| !name.is_empty() && !source.is_empty())
+                        .collect(),
+                ),
+                request_signing_certificate: Some(
+                    form_value(&form, "request_signing_certificate")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                ),
+                theme: current.map(|sp| sp.theme),
+            };
+            let caller = Caller::from_admin_session(&session).await;
+            match saml_service::update_service_provider(&caller, id, params).await {
+                Ok(_) => redirect_response("/admin/saml"),
+                Err(e) => service_error(e, "Failed to update SAML application"),
+            }
+        }
+        (&Method::POST, "/admin/saml/toggle") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let current = store::get_saml_service_provider(id).await.ok().flatten();
+            let Some(current) = current else {
+                return error_response(StatusCode::NOT_FOUND, "SAML application not found");
+            };
+            let caller = Caller::from_admin_session(&session).await;
+            let params = saml_service::UpdateSamlSpParams {
+                enabled: Some(!current.enabled),
+                ..Default::default()
+            };
+            match saml_service::update_service_provider(&caller, id, params).await {
+                Ok(_) => redirect_response("/admin/saml"),
+                Err(e) => service_error(e, "Failed to update SAML application"),
+            }
+        }
+        (&Method::POST, "/admin/saml/delete") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let caller = Caller::from_admin_session(&session).await;
+            match saml_service::delete_service_provider(&caller, id).await {
+                Ok(()) => redirect_response("/admin/saml"),
+                Err(e) => service_error(e, "Failed to delete SAML application"),
+            }
+        }
+        (&Method::POST, "/admin/saml/rotate-key") => {
+            if !session.is_superadmin {
+                return error_response(StatusCode::FORBIDDEN, "Superadmin required");
+            }
+            match crate::saml::keys::rotate_key_ring().await {
+                Ok(ring) => {
+                    let _ = store::log_audit(
+                        "saml_key_rotated",
+                        &session.user.id,
+                        "saml-signing-key",
+                        &ring.current.version.to_string(),
+                    )
+                    .await;
+                    redirect_response("/admin/saml")
+                }
+                Err(e) => service_error(ApiError::internal(e), "Failed to rotate SAML key"),
+            }
+        }
+
+        // ── SCIM Provisioning ──
+        (&Method::GET, "/admin/scim") => views::enterprise::render_scim_page(&session).await,
+        (&Method::GET, "/admin/scim/new") => views::enterprise::render_scim_form(&session).await,
+        (&Method::POST, "/admin/scim") => {
+            let form = parse_form(body);
+            let caller = Caller::from_admin_session(&session).await;
+            match scim_service::create_connection(
+                &caller,
+                form_value(&form, "name").unwrap_or(""),
+                form_value(&form, "tenant_id").unwrap_or(""),
+                form_value(&form, "default_role").unwrap_or("member"),
+            )
+            .await
+            {
+                Ok((connection, token)) => {
+                    views::enterprise::render_scim_token(&session, &connection, &token)
+                }
+                Err(e) => service_error(e, "Failed to create SCIM connection"),
+            }
+        }
+        (&Method::POST, "/admin/scim/toggle") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let current = store::get_scim_connection(id).await.ok().flatten();
+            let Some(current) = current else {
+                return error_response(StatusCode::NOT_FOUND, "SCIM connection not found");
+            };
+            let caller = Caller::from_admin_session(&session).await;
+            match scim_service::set_enabled(&caller, id, !current.enabled).await {
+                Ok(_) => redirect_response("/admin/scim"),
+                Err(e) => service_error(e, "Failed to update SCIM connection"),
+            }
+        }
+        (&Method::POST, "/admin/scim/rotate-token") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let caller = Caller::from_admin_session(&session).await;
+            let connection = store::get_scim_connection(id).await.ok().flatten();
+            match (scim_service::rotate_token(&caller, id).await, connection) {
+                (Ok(token), Some(connection)) => {
+                    views::enterprise::render_scim_token(&session, &connection, &token)
+                }
+                (Err(e), _) => service_error(e, "Failed to rotate SCIM token"),
+                _ => error_response(StatusCode::NOT_FOUND, "SCIM connection not found"),
+            }
+        }
+        (&Method::POST, "/admin/scim/delete") => {
+            let form = parse_form(body);
+            let id = form_value(&form, "id").unwrap_or("");
+            let caller = Caller::from_admin_session(&session).await;
+            match scim_service::delete_connection(&caller, id).await {
+                Ok(()) => redirect_response("/admin/scim"),
+                Err(e) => service_error(e, "Failed to delete SCIM connection"),
+            }
         }
 
         // ── Identity Providers ──

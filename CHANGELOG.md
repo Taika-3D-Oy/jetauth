@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.17] - 2026-11-02
+
+### Added
+
+- **SAML 2.0 identity provider**:
+  - Added SP-initiated SSO with `saml-rs`, signed RSA-SHA256 assertions, configurable attributes, email and persistent NameID formats, exact ACS allow-listing, request-age checks, and replay protection.
+  - Integrated existing password, passkey, upstream OIDC, MFA, hooks, and browser SSO flows.
+  - Added dedicated immutable signing-key records with rotation and current/previous certificate overlap.
+- **Inbound SCIM 2.0 provisioning**:
+  - Added discovery, Users CRUD, PATCH, filtering, pagination, ETags, tenant-scoped connections, and rotatable hashed bearer tokens.
+  - Added deactivation with session and refresh-token revocation, connection isolation, and permanent deletion restricted to SCIM-owned users.
+- **Management and deployment**:
+  - Added SAML application and SCIM connection administration, Management API endpoints, typed CLI commands, OpenAPI documentation, and integration suites.
+  - Updated wasmCloud 2.7-compatible workload manifests, socket declarations, and headless local service configuration.
+
+### Changed
+
+- Upgraded `p256` to 0.14 and migrated key generation and signature APIs.
+- Updated local test setup for JetCache RC6 and added direct NATS service-IP configuration.
+
 ## [2.0.0-rc.16] - 2026-10-30
 
 ### Fixed

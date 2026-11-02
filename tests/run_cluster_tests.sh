@@ -34,12 +34,17 @@ export KUBE_CTX_FLAG="${KUBE_CTX_FLAG:-}"
 # Auto-detect workload YAML file from deploy/ directory.
 auto_detect_yaml() {
   if [[ -z "${LATTICE_ID_YAML:-}" ]]; then
-    for f in "$ROOT"/deploy/workloaddeployment*.yaml; do
-      if [[ -f "$f" ]] && (grep -q "jetauth" "$f" 2>/dev/null || grep -q "lattice-id" "$f" 2>/dev/null); then
-        LATTICE_ID_YAML="$f"
-        break
-      fi
-    done
+    if [[ -f "$ROOT/deploy/workloaddeployment-local.yaml" ]]; then
+      LATTICE_ID_YAML="$ROOT/deploy/workloaddeployment-local.yaml"
+    fi
+    if [[ -z "${LATTICE_ID_YAML:-}" ]]; then
+      for f in "$ROOT"/deploy/workloaddeployment*.yaml; do
+        if [[ -f "$f" ]] && (grep -q "jetauth" "$f" 2>/dev/null || grep -q "lattice-id" "$f" 2>/dev/null); then
+          LATTICE_ID_YAML="$f"
+          break
+        fi
+      done
+    fi
   fi
   log "Using workload YAML: ${LATTICE_ID_YAML:-<not found>}"
 }
@@ -70,6 +75,17 @@ reset_cluster() {
     kubectl ${KUBE_CTX_FLAG} apply -f "$LATTICE_ID_YAML" >/dev/null
   else
     fail "No lattice-id YAML found — set LATTICE_ID_YAML"
+  fi
+  if [[ -f "$ROOT/deploy/service-local.yaml" ]]; then
+    kubectl ${KUBE_CTX_FLAG} apply -f "$ROOT/deploy/service-local.yaml" >/dev/null
+  fi
+  if kubectl ${KUBE_CTX_FLAG} get workloaddeployment jetauth ${KUBE_NS_FLAG} >/dev/null 2>&1; then
+    local nats_data_ip
+    nats_data_ip=$(kubectl ${KUBE_CTX_FLAG} get service nats-data ${KUBE_NS_FLAG} -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+    if [[ -n "$nats_data_ip" ]]; then
+      kubectl ${KUBE_CTX_FLAG} patch workloaddeployment jetauth ${KUBE_NS_FLAG} --type=json \
+        -p="[{\"op\":\"replace\",\"path\":\"/spec/template/spec/service/localResources/environment/config/NATS_DATA_URL\",\"value\":\"${nats_data_ip}:4222\"}]" >/dev/null
+    fi
   fi
   log "Workloads re-applied, waiting for OIDC readiness..."
 
@@ -112,6 +128,8 @@ CLUSTER_TESTS=(
   integration_logout
   integration_backchannel
   integration_sso
+  integration_saml
+  integration_scim
   integration_concurrent
 )
 

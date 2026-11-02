@@ -341,7 +341,7 @@ register_and_login_superadmin() {
   local auth_headers="$TMP_DIR/boot-auth-$tag.headers"
   curl_capture GET \
     "$BASE_URL/authorize?response_type=code&client_id=lid-admin&redirect_uri=http://localhost:8090/callback&scope=openid+email+profile&state=test&nonce=test-nonce&code_challenge=$challenge&code_challenge_method=S256" \
-    "$auth_body" "$auth_headers" >/dev/null
+    "$auth_body" "$auth_headers" -c "$TMP_DIR/boot-cookies-$tag.txt" >/dev/null
   local session_id
   session_id=$(extract_session_id "$auth_body")
 
@@ -349,6 +349,7 @@ register_and_login_superadmin() {
   local login_body="$TMP_DIR/boot-login-$tag.html"
   local login_headers="$TMP_DIR/boot-login-$tag.headers"
   status=$(curl_capture POST "$BASE_URL/login" "$login_body" "$login_headers" \
+    -b "$TMP_DIR/boot-cookies-$tag.txt" -c "$TMP_DIR/boot-cookies-$tag.txt" \
     -H 'content-type: application/x-www-form-urlencoded' \
     -d "session_id=$session_id&email=$email&password=$password")
   if [[ "$status" != "302" ]]; then
@@ -402,7 +403,7 @@ user_id_via_login() {
   local auth_headers="$TMP_DIR/$tag-auth.headers"
   curl_capture GET \
     "$BASE_URL/authorize?response_type=code&client_id=lid-admin&redirect_uri=http://localhost:8090/callback&scope=openid+email+profile&state=uid&nonce=uid-nonce&code_challenge=$challenge&code_challenge_method=S256" \
-    "$auth_body" "$auth_headers" >/dev/null
+    "$auth_body" "$auth_headers" -c "$TMP_DIR/$tag-cookies.txt" >/dev/null
   local session_id
   session_id=$(extract_session_id "$auth_body")
 
@@ -410,6 +411,7 @@ user_id_via_login() {
   local login_headers="$TMP_DIR/$tag-login.headers"
   local status
   status=$(curl_capture POST "$BASE_URL/login" "$login_body" "$login_headers" \
+    -b "$TMP_DIR/$tag-cookies.txt" -c "$TMP_DIR/$tag-cookies.txt" \
     -H 'content-type: application/x-www-form-urlencoded' \
     -d "session_id=$session_id&email=$email&password=$password")
   if [[ "$status" != "302" ]]; then

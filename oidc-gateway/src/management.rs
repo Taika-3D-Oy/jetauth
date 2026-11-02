@@ -1,5 +1,5 @@
 use http::{Response, StatusCode};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::error::ApiError;
 use crate::services::authz::{self, Caller};
@@ -1046,6 +1046,214 @@ pub async fn stats(auth: Option<&str>) -> Result<Response<String>, ApiError> {
         "clients": clients.len(),
         "identity_providers": idps.len(),
     }))
+}
+
+// ── SAML applications and SCIM provisioning ──────────────────
+
+use crate::services::{saml as saml_service, scim as scim_service};
+
+pub async fn list_saml_service_providers(auth: Option<&str>) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    caller.require_superadmin()?;
+    let providers = store::list_saml_service_providers()
+        .await
+        .map_err(ApiError::internal)?;
+    json_ok(&serde_json::to_value(providers).map_err(|e| ApiError::internal(e.to_string()))?)
+}
+
+pub async fn get_saml_service_provider(
+    auth: Option<&str>,
+    id: &str,
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    caller.require_superadmin()?;
+    let provider = store::get_saml_service_provider(id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("SAML service provider not found"))?;
+    json_ok(&serde_json::to_value(provider).map_err(|e| ApiError::internal(e.to_string()))?)
+}
+
+pub async fn create_saml_service_provider(
+    auth: Option<&str>,
+    body: &[u8],
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    #[derive(serde::Deserialize)]
+    struct Req {
+        name: String,
+        entity_id: String,
+        acs_urls: Vec<String>,
+        name_id_format: Option<String>,
+        #[serde(default)]
+        attribute_mappings: Vec<(String, String)>,
+        request_signing_certificate: Option<String>,
+        theme: Option<store::ClientTheme>,
+    }
+    let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let provider = saml_service::create_service_provider(
+        &caller,
+        saml_service::CreateSamlSpParams {
+            name: req.name,
+            entity_id: req.entity_id,
+            acs_urls: req.acs_urls,
+            name_id_format: req.name_id_format,
+            attribute_mappings: req.attribute_mappings,
+            request_signing_certificate: req.request_signing_certificate,
+            theme: req.theme,
+        },
+    )
+    .await?;
+    json_response(
+        StatusCode::CREATED,
+        &serde_json::to_value(provider).map_err(|e| ApiError::internal(e.to_string()))?,
+    )
+}
+
+pub async fn update_saml_service_provider(
+    auth: Option<&str>,
+    id: &str,
+    body: &[u8],
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    #[derive(serde::Deserialize)]
+    struct Req {
+        name: Option<String>,
+        acs_urls: Option<Vec<String>>,
+        enabled: Option<bool>,
+        name_id_format: Option<String>,
+        attribute_mappings: Option<Vec<(String, String)>>,
+        request_signing_certificate: Option<String>,
+        theme: Option<Option<store::ClientTheme>>,
+    }
+    let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let provider = saml_service::update_service_provider(
+        &caller,
+        id,
+        saml_service::UpdateSamlSpParams {
+            name: req.name,
+            acs_urls: req.acs_urls,
+            enabled: req.enabled,
+            name_id_format: req.name_id_format,
+            attribute_mappings: req.attribute_mappings,
+            request_signing_certificate: req
+                .request_signing_certificate
+                .map(|value| if value.is_empty() { None } else { Some(value) }),
+            theme: req.theme,
+        },
+    )
+    .await?;
+    json_ok(&serde_json::to_value(provider).map_err(|e| ApiError::internal(e.to_string()))?)
+}
+
+pub async fn delete_saml_service_provider(
+    auth: Option<&str>,
+    id: &str,
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    saml_service::delete_service_provider(&caller, id).await?;
+    json_ok(&serde_json::json!({"deleted": true, "id": id}))
+}
+
+pub async fn rotate_saml_key(auth: Option<&str>) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    caller.require_superadmin()?;
+    let ring = crate::saml::keys::rotate_key_ring()
+        .await
+        .map_err(ApiError::internal)?;
+    let _ = store::log_audit(
+        "saml_key_rotated",
+        &caller.user_id,
+        "saml-signing-key",
+        &ring.current.version.to_string(),
+    )
+    .await;
+    json_ok(&serde_json::json!({
+        "rotated": true,
+        "version": ring.current.version,
+        "certificate_pem": ring.current.certificate_pem,
+        "previous_grace_expires": ring.previous_grace_expires,
+    }))
+}
+
+fn scim_connection_json(connection: &store::ScimConnection) -> Value {
+    serde_json::json!({
+        "id": connection.id,
+        "name": connection.name,
+        "tenant_id": connection.tenant_id,
+        "enabled": connection.enabled,
+        "default_role": connection.default_role,
+        "created_at": connection.created_at,
+    })
+}
+
+pub async fn list_scim_connections(auth: Option<&str>) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    let connections = store::list_scim_connections()
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|connection| {
+            authz::role_level(caller.tenant_role(&connection.tenant_id))
+                >= authz::role_level("admin")
+        })
+        .map(|connection| scim_connection_json(&connection))
+        .collect::<Vec<_>>();
+    json_ok(&Value::Array(connections))
+}
+
+pub async fn create_scim_connection(
+    auth: Option<&str>,
+    body: &[u8],
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    #[derive(serde::Deserialize)]
+    struct Req {
+        name: String,
+        tenant_id: String,
+        default_role: Option<String>,
+    }
+    let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let (connection, token) = scim_service::create_connection(
+        &caller,
+        &req.name,
+        &req.tenant_id,
+        req.default_role.as_deref().unwrap_or("member"),
+    )
+    .await?;
+    let mut body = scim_connection_json(&connection);
+    body["token"] = json!(token);
+    json_response(StatusCode::CREATED, &body)
+}
+
+pub async fn update_scim_connection(
+    auth: Option<&str>,
+    id: &str,
+    body: &[u8],
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    #[derive(serde::Deserialize)]
+    struct Req {
+        enabled: bool,
+    }
+    let req: Req = serde_json::from_slice(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    let connection = scim_service::set_enabled(&caller, id, req.enabled).await?;
+    json_ok(&scim_connection_json(&connection))
+}
+
+pub async fn rotate_scim_token(auth: Option<&str>, id: &str) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    let token = scim_service::rotate_token(&caller, id).await?;
+    json_ok(&serde_json::json!({"id": id, "token": token}))
+}
+
+pub async fn delete_scim_connection(
+    auth: Option<&str>,
+    id: &str,
+) -> Result<Response<String>, ApiError> {
+    let caller = require_caller(auth).await?;
+    scim_service::delete_connection(&caller, id).await?;
+    json_ok(&serde_json::json!({"deleted": true, "id": id}))
 }
 
 // ── Identity provider management ────────────────────────────

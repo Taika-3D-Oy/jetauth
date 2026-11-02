@@ -111,7 +111,7 @@ The deploy script handles this automatically. For manual setup:
 
 ```bash
 helm install wasmcloud oci://ghcr.io/wasmcloud/charts/runtime-operator \
-  --version 2.0.1 \
+  --version 2.7.0 \
   --set 'hostConfig.allowInsecureRegistries=true'
 ```
 
@@ -135,9 +135,12 @@ wash oci push --insecure localhost:5001/jetauth/password-hasher:dev \
 wash oci push --insecure localhost:5001/jetauth/email-worker:dev \
   target/wasm32-wasip2/release/email_worker.wasm
 
-# 3. Apply the workload deployment
+# 3. Apply the workload deployment and headless HTTP service
 kubectl apply -f deploy/workloaddeployment-local.yaml
+kubectl apply -f deploy/service-local.yaml
 ```
+
+The headless service has no selector because wasmCloud manages its EndpointSlices. The local JetCache deployment uses `LDB_ALLOW_PLAINTEXT=1` only for disposable test data. If the runtime cannot resolve `nats-data`, patch `NATS_DATA_URL` to the current `nats-data` ClusterIP, matching the direct-IP approach used by the GKE manifests.
 
 ### Redeploy after code changes
 

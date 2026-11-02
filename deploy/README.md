@@ -14,6 +14,7 @@ This directory contains declarative Kubernetes and wasmCloud manifests for deplo
 | `workloaddeployment-local-prod.yaml` | Local configuration simulating production email & registration settings |
 | `workloaddeployment-eu.yaml` | Multi-region EU authority manifest |
 | `workloaddeployment-us.yaml` | Multi-region US authority manifest |
+| `service-local.yaml` | Headless local HTTP service; wasmCloud manages its EndpointSlices |
 | `nats-data.conf` | Standalone JetStream configuration for state persistence (no auth/TLS — dev only) |
 | `kind-config.yaml` | Sample Kind cluster definition with NodePort exposure |
 

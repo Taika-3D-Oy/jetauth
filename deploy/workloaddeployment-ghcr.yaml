@@ -18,6 +18,9 @@ metadata:
 spec:
   replicas: 1
   deployPolicy: RollingUpdate
+  kubernetes:
+    service:
+      name: jetauth
   template:
     labels:
       app.kubernetes.io/name: jetauth
@@ -40,7 +43,7 @@ spec:
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
         - name: oidc-gateway
-          image: ghcr.io/__GHCR_OWNER__/jetauth/oidc-gateway:v2.0.0-rc.16
+          image: ghcr.io/__GHCR_OWNER__/jetauth/oidc-gateway:v2.0.0-rc.17
           imagePullPolicy: Always
           maxInvocations: 100
           localResources:
@@ -48,18 +51,24 @@ spec:
               config:
                 issuer_url: __ISSUER_URL__
         - name: password-hasher
-          image: ghcr.io/__GHCR_OWNER__/jetauth/password-hasher:v2.0.0-rc.16
+          image: ghcr.io/__GHCR_OWNER__/jetauth/password-hasher:v2.0.0-rc.17
           imagePullPolicy: Always
           maxInvocations: 8
         - name: email-worker
-          image: ghcr.io/__GHCR_OWNER__/jetauth/email-worker:v2.0.0-rc.16
+          image: ghcr.io/__GHCR_OWNER__/jetauth/email-worker:v2.0.0-rc.17
           imagePullPolicy: Always
           maxInvocations: 10
       hostInterfaces:
         - namespace: wasi
+          package: sockets
+          interfaces:
+            - tcp
+            - ip-name-lookup
+        - namespace: wasi
           package: http
           interfaces:
             - incoming-handler
+            - outgoing-handler
           config:
             host: __HOST__
         - namespace: wasi
@@ -77,7 +86,3 @@ spec:
             bootstrap_hook: |
               set_superadmin(true);
               log("Bootstrap: promoted " + user.email + " to superadmin");
-        - namespace: wasi
-          package: http
-          interfaces:
-            - outgoing-handler

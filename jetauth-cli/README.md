@@ -68,6 +68,12 @@ jetauth keys rotate
 jetauth settings get
 jetauth settings update --input settings.json
 jetauth audit list --event-type client_created --since 1775630000
+jetauth saml list
+jetauth saml create --input saml-application.json
+jetauth saml rotate-key
+jetauth scim list
+jetauth scim create --input scim-connection.json
+jetauth scim rotate-token CONNECTION_ID
 jetauth stats
 ```
 

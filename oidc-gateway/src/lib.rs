@@ -39,6 +39,8 @@ pub mod par;
 mod passkeys;
 mod region_authority;
 mod registration;
+mod saml;
+mod scim;
 mod service_client;
 mod services;
 mod social;
@@ -621,6 +623,34 @@ async fn handle(
             handle_password_reset_complete(&body_bytes).await
         }
 
+        // ── SCIM 2.0 provisioning ────────────────────────────
+        (_, p) if p.starts_with("/scim/v2/") => {
+            let body_bytes = read_body(body).await?;
+            Ok(scim::handle(
+                &parts.method,
+                &p[9..],
+                query,
+                &body_bytes,
+                &parts.headers,
+                &issuer,
+            )
+            .await)
+        }
+
+        // ── SAML 2.0 identity provider ───────────────────────
+        (&Method::GET, "/saml/metadata") => saml::metadata(&issuer).await.map_err(ApiError::from),
+        (&Method::GET, "/saml/sso") => {
+            saml::start(&Method::GET, query, &[], &issuer, &parts.headers)
+                .await
+                .map_err(ApiError::from)
+        }
+        (&Method::POST, "/saml/sso") => {
+            let body_bytes = read_body(body).await?;
+            saml::start(&Method::POST, query, &body_bytes, &issuer, &parts.headers)
+                .await
+                .map_err(ApiError::from)
+        }
+
         // ── Social login ────────────────────────────────────
         (&Method::GET, "/auth/google") => {
             google::start(query, &issuer).await.map_err(ApiError::from)
@@ -870,9 +900,9 @@ async fn handle_internal_lookup(query: &str) -> Result<Response<String>, String>
         .map_err(|e| e.to_string())
 }
 
-/// Export all OIDC clients and tenants for cross-region config sync.
-/// Called by remote gateway instances via HTTP.
-/// Note: client_secret is stripped to prevent credential leakage.
+/// Export OIDC clients, tenants, SAML applications, and SCIM connections for
+/// cross-region config sync. Client secrets are stripped; SCIM token hashes are
+/// retained so a provisioner can use the same connection token in any region.
 async fn handle_internal_config() -> Result<Response<String>, String> {
     let clients: Vec<serde_json::Value> = store::list_clients()
         .await
@@ -887,10 +917,16 @@ async fn handle_internal_config() -> Result<Response<String>, String> {
         })
         .collect();
     let tenants = store::list_tenants().await.unwrap_or_default();
+    let saml_service_providers = store::list_saml_service_providers()
+        .await
+        .unwrap_or_default();
+    let scim_connections = store::list_scim_connections().await.unwrap_or_default();
 
     let body = serde_json::json!({
         "clients": clients,
         "tenants": tenants,
+        "saml_service_providers": saml_service_providers,
+        "scim_connections": scim_connections,
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -936,6 +972,26 @@ async fn handle_internal_replicate(body: &[u8]) -> Result<Response<String>, Stri
         }
         ("delete", "client") => {
             store::kv_delete(&store::clients_store_name(), &format!("client:{}", req.id)).await?;
+        }
+        ("put", "saml_sp") => {
+            let data = req
+                .data
+                .ok_or("missing data for SAML service provider put")?;
+            let provider: store::SamlServiceProvider = serde_json::from_value(data)
+                .map_err(|e| format!("invalid SAML service provider: {e}"))?;
+            store::save_saml_service_provider(&provider).await?;
+        }
+        ("delete", "saml_sp") => {
+            store::delete_saml_service_provider(&req.id).await?;
+        }
+        ("put", "scim_connection") => {
+            let data = req.data.ok_or("missing data for SCIM connection put")?;
+            let connection: store::ScimConnection = serde_json::from_value(data)
+                .map_err(|e| format!("invalid SCIM connection: {e}"))?;
+            store::save_scim_connection(&connection).await?;
+        }
+        ("delete", "scim_connection") => {
+            store::delete_scim_connection(&req.id).await?;
         }
         _ => return Err(format!("unknown replicate op={} kind={}", req.op, req.kind)),
     }
@@ -1020,6 +1076,40 @@ async fn route_api(
         // DELETE /api/users/:id/passkeys/:cred_id
         (&Method::DELETE, ["api", "users", id, "passkeys", cred_id]) => {
             management::delete_passkey(auth, id, cred_id).await
+        }
+        // ── SAML applications and SCIM provisioning ──────────
+        (&Method::GET, ["api", "saml-service-providers"]) => {
+            management::list_saml_service_providers(auth).await
+        }
+        (&Method::POST, ["api", "saml-service-providers"]) => {
+            management::create_saml_service_provider(auth, body).await
+        }
+        (&Method::GET, ["api", "saml-service-providers", id]) => {
+            management::get_saml_service_provider(auth, id).await
+        }
+        (&Method::PUT, ["api", "saml-service-providers", id]) => {
+            management::update_saml_service_provider(auth, id, body).await
+        }
+        (&Method::DELETE, ["api", "saml-service-providers", id]) => {
+            management::delete_saml_service_provider(auth, id).await
+        }
+        (&Method::POST, ["api", "saml-signing-key", "rotate"]) => {
+            management::rotate_saml_key(auth).await
+        }
+        (&Method::GET, ["api", "scim", "connections"]) => {
+            management::list_scim_connections(auth).await
+        }
+        (&Method::POST, ["api", "scim", "connections"]) => {
+            management::create_scim_connection(auth, body).await
+        }
+        (&Method::PUT, ["api", "scim", "connections", id]) => {
+            management::update_scim_connection(auth, id, body).await
+        }
+        (&Method::DELETE, ["api", "scim", "connections", id]) => {
+            management::delete_scim_connection(auth, id).await
+        }
+        (&Method::POST, ["api", "scim", "connections", id, "rotate-token"]) => {
+            management::rotate_scim_token(auth, id).await
         }
         // ── Identity provider management ────────────────────
         // GET /api/identity-providers

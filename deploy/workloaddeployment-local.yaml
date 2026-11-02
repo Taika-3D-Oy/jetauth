@@ -9,6 +9,9 @@ metadata:
 spec:
   replicas: 1
   deployPolicy: RollingUpdate
+  kubernetes:
+    service:
+      name: jetauth
   template:
     labels:
       app.kubernetes.io/name: jetauth
@@ -26,6 +29,7 @@ spec:
               LDB_INSTANCE: "lid"
               JETCACHE_TCP_PORT: "4080"
               LDB_TCP_PORT: "4080"
+              LDB_ALLOW_PLAINTEXT: "1"
               LDB_CONSISTENCY_WATCHER_WAIT_STEPS: "2"
               LDB_CONSISTENCY_WATCHER_WAIT_STEP_SECS: "1"
       components:
@@ -44,9 +48,15 @@ spec:
           maxInvocations: 10
       hostInterfaces:
         - namespace: wasi
+          package: sockets
+          interfaces:
+            - tcp
+            - ip-name-lookup
+        - namespace: wasi
           package: http
           interfaces:
             - incoming-handler
+            - outgoing-handler
           config:
             host: "localhost"
         - namespace: wasi
@@ -60,11 +70,9 @@ spec:
             dev_mode: "true"
             require_email_verification: "false"
             allow_registration: "true"
+            saml_enabled: "true"
+            scim_enabled: "true"
             email_provider: "log"
             bootstrap_hook: |
               set_superadmin(true);
               log("Bootstrap: promoted " + user.email + " to superadmin");
-        - namespace: wasi
-          package: http
-          interfaces:
-            - outgoing-handler

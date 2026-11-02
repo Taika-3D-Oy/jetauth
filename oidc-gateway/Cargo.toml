@@ -32,3 +32,6 @@ p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"]
 ciborium = { version = "0.2", default-features = false }
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 maud = "0.26"
+saml-rs = { version = "0.6.1", default-features = false, features = ["crypto-rustcrypto"] }
+x509-cert = { version = "0.2.5", features = ["builder"] }
+time = { version = "0.3", features = ["formatting"] }

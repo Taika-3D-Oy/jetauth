@@ -66,6 +66,8 @@ impl App {
             Command::Tenants { command } => self.tenants(command).await,
             Command::Users { command } => self.users(command).await,
             Command::Idps { command } => self.idps(command).await,
+            Command::Saml { command } => self.saml(command).await,
+            Command::Scim { command } => self.scim(command).await,
             Command::Hooks { command } => self.hooks(command).await,
             Command::Keys { command } => self.keys(command).await,
             Command::Settings { command } => self.settings(command).await,
@@ -597,6 +599,102 @@ impl App {
     ) -> Result<()> {
         self.call_and_render(method, &format!("{}/{action}", user_path(user_id)), body)
             .await
+    }
+
+    async fn saml(&self, command: SamlCommand) -> Result<()> {
+        use SamlCommand::*;
+        match command {
+            List => {
+                self.call_and_render(Method::GET, "/api/saml-service-providers", None)
+                    .await
+            }
+            Get { sp_id } => {
+                self.call_and_render(
+                    Method::GET,
+                    &format!("/api/saml-service-providers/{}", client::segment(&sp_id)),
+                    None,
+                )
+                .await
+            }
+            Create { input } => {
+                let body = self.read_json(&input)?;
+                self.call_and_render(Method::POST, "/api/saml-service-providers", Some(&body))
+                    .await
+            }
+            Update { sp_id, input } => {
+                let body = self.read_json(&input)?;
+                self.call_and_render(
+                    Method::PUT,
+                    &format!("/api/saml-service-providers/{}", client::segment(&sp_id)),
+                    Some(&body),
+                )
+                .await
+            }
+            Delete { sp_id } => {
+                self.confirm(&format!("Delete SAML application {sp_id}"))?;
+                self.call_and_render(
+                    Method::DELETE,
+                    &format!("/api/saml-service-providers/{}", client::segment(&sp_id)),
+                    None,
+                )
+                .await
+            }
+            RotateKey => {
+                self.confirm("Rotate the SAML signing key")?;
+                self.call_and_render(Method::POST, "/api/saml-signing-key/rotate", None)
+                    .await
+            }
+        }
+    }
+
+    async fn scim(&self, command: ScimCommand) -> Result<()> {
+        use ScimCommand::*;
+        match command {
+            List => {
+                self.call_and_render(Method::GET, "/api/scim/connections", None)
+                    .await
+            }
+            Create { input } => {
+                let body = self.read_json(&input)?;
+                self.call_and_render(Method::POST, "/api/scim/connections", Some(&body))
+                    .await
+            }
+            Update {
+                connection_id,
+                input,
+            } => {
+                let body = self.read_json(&input)?;
+                self.call_and_render(
+                    Method::PUT,
+                    &format!("/api/scim/connections/{}", client::segment(&connection_id)),
+                    Some(&body),
+                )
+                .await
+            }
+            Delete { connection_id } => {
+                self.confirm(&format!("Delete SCIM connection {connection_id}"))?;
+                self.call_and_render(
+                    Method::DELETE,
+                    &format!("/api/scim/connections/{}", client::segment(&connection_id)),
+                    None,
+                )
+                .await
+            }
+            RotateToken { connection_id } => {
+                self.confirm(&format!(
+                    "Rotate the token for SCIM connection {connection_id}"
+                ))?;
+                self.call_and_render(
+                    Method::POST,
+                    &format!(
+                        "/api/scim/connections/{}/rotate-token",
+                        client::segment(&connection_id)
+                    ),
+                    None,
+                )
+                .await
+            }
+        }
     }
 
     async fn idps(&self, command: IdpsCommand) -> Result<()> {

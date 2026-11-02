@@ -10,6 +10,8 @@ pub mod authz;
 pub mod clients;
 pub mod hooks;
 pub mod idps;
+pub mod saml;
+pub mod scim;
 pub mod settings;
 pub mod tenants;
 pub mod users;

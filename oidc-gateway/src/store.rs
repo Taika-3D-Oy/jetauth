@@ -94,6 +94,8 @@ struct OidcConfigCache {
     client_secret_pepper: Option<String>,
     client_registration_mode: Option<String>,
     client_registration_token: Option<String>,
+    saml_enabled: Option<String>,
+    scim_enabled: Option<String>,
     encrypt_tables: Option<String>,
 }
 
@@ -123,6 +125,8 @@ pub async fn init_config() {
     let client_secret_pepper = config_value_async("client_secret_pepper").await;
     let client_registration_mode = config_value_async("client_registration_mode").await;
     let client_registration_token = config_value_async("client_registration_token").await;
+    let saml_enabled = config_value_async("saml_enabled").await;
+    let scim_enabled = config_value_async("scim_enabled").await;
     let encrypt_tables = config_value_async("encrypt_tables").await;
 
     CONFIG_CACHE.with(|c| {
@@ -146,6 +150,8 @@ pub async fn init_config() {
             client_secret_pepper,
             client_registration_mode,
             client_registration_token,
+            saml_enabled,
+            scim_enabled,
             encrypt_tables,
         });
     });
@@ -178,8 +184,21 @@ pub fn init_config_for_test(dev_mode: bool, client_secret_pepper: Option<&str>) 
             client_secret_pepper: client_secret_pepper.map(|s| s.to_string()),
             client_registration_mode: None,
             client_registration_token: None,
+            saml_enabled: None,
+            scim_enabled: None,
             encrypt_tables: None,
         });
+    });
+}
+
+#[cfg(test)]
+pub fn init_protocol_features_for_test(saml: bool, scim: bool) {
+    init_config_for_test(true, None);
+    CONFIG_CACHE.with(|cache| {
+        if let Some(config) = cache.borrow_mut().as_mut() {
+            config.saml_enabled = Some(saml.to_string());
+            config.scim_enabled = Some(scim.to_string());
+        }
     });
 }
 
@@ -206,6 +225,8 @@ pub fn init_registration_config_for_test(mode: &str, token: Option<&str>) {
             client_secret_pepper: Some("test_pepper_123456789012345678901234567890".to_string()),
             client_registration_mode: Some(mode.to_string()),
             client_registration_token: token.map(|s| s.to_string()),
+            saml_enabled: None,
+            scim_enabled: None,
             encrypt_tables: None,
         });
     });
@@ -247,6 +268,8 @@ pub fn config_value(key: &str) -> Option<String> {
         "client_secret_pepper" => c.client_secret_pepper.clone(),
         "client_registration_mode" => c.client_registration_mode.clone(),
         "client_registration_token" => c.client_registration_token.clone(),
+        "saml_enabled" => c.saml_enabled.clone(),
+        "scim_enabled" => c.scim_enabled.clone(),
         "encrypt_tables" => c.encrypt_tables.clone(),
         _ => None,
     })
@@ -577,6 +600,68 @@ pub struct SocialIdentity {
     pub user_id: String,
     pub email: String,
     pub linked_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SamlServiceProvider {
+    pub id: String,
+    pub name: String,
+    pub entity_id: String,
+    pub acs_urls: Vec<String>,
+    pub enabled: bool,
+    pub name_id_format: String,
+    pub attribute_mappings: Vec<(String, String)>,
+    #[serde(default)]
+    pub request_signing_certificate: Option<String>,
+    #[serde(default)]
+    pub theme: Option<ClientTheme>,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SamlSigningKey {
+    pub version: u32,
+    pub private_key_pem: String,
+    pub certificate_pem: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SamlKeyRing {
+    pub current: SamlSigningKey,
+    #[serde(default)]
+    pub previous: Option<SamlSigningKey>,
+    #[serde(default)]
+    pub previous_grace_expires: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SamlFlow {
+    pub sp_id: String,
+    pub request_fields: Vec<(String, String)>,
+    pub binding: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScimConnection {
+    pub id: String,
+    pub name: String,
+    pub tenant_id: String,
+    pub token_hash: String,
+    pub enabled: bool,
+    pub default_role: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScimIdentity {
+    pub connection_id: String,
+    pub external_id: String,
+    pub user_id: String,
+    pub version: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1735,6 +1820,54 @@ where
     Err("update_user_rmw: too many retries".into())
 }
 
+pub async fn update_user_provisioned(
+    user_id: &str,
+    email: &str,
+    name: &str,
+    status: &str,
+) -> Result<(), String> {
+    const MAX_RETRIES: usize = 5;
+    for attempt in 0..MAX_RETRIES {
+        let (mut user, revision) = get_user_cas(user_id).await?.ok_or("user not found")?;
+        let old_email = user.email.clone();
+        let email_changed = !old_email.eq_ignore_ascii_case(email);
+        let new_email_key = format!("email:{}", hmac_email(email));
+        if email_changed {
+            kv_cas_create_raw(&user_idx_store(), &new_email_key, user_id.as_bytes())
+                .await
+                .map_err(|e| {
+                    if e.contains("already exists") {
+                        "email already registered".to_string()
+                    } else {
+                        e
+                    }
+                })?;
+        }
+        user.email = email.to_string();
+        user.name = name.to_string();
+        user.status = status.to_string();
+        match update_user_cas(&user, revision).await {
+            Ok(_) => {
+                if email_changed {
+                    let old_key = format!("email:{}", hmac_email(&old_email));
+                    let _ = kv_delete(&user_idx_store(), &old_key).await;
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if email_changed {
+                    let _ = kv_delete(&user_idx_store(), &new_email_key).await;
+                }
+                if e.contains("revision mismatch") && attempt < MAX_RETRIES - 1 {
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    Err("update_user_provisioned: too many retries".into())
+}
+
 /// Legacy non-CAS update — only use for fields where races are harmless.
 #[allow(dead_code)]
 pub async fn update_user(user: &User) -> Result<(), String> {
@@ -2628,6 +2761,256 @@ pub async fn delete_identity_provider(id: &str) -> Result<(), String> {
     kv_delete(&clients_store(), &format!("idp:{id}")).await
 }
 
+// ── SAML service provider and key operations ─────────────────
+
+pub async fn save_saml_service_provider(sp: &SamlServiceProvider) -> Result<(), String> {
+    kv_set(&clients_store(), &format!("saml_sp:{}", sp.id), sp).await
+}
+
+pub async fn get_saml_service_provider(id: &str) -> Result<Option<SamlServiceProvider>, String> {
+    kv_get(&clients_store(), &format!("saml_sp:{id}")).await
+}
+
+pub async fn list_saml_service_providers() -> Result<Vec<SamlServiceProvider>, String> {
+    let rows = kv_prefix::<SamlServiceProvider>(&clients_store(), "saml_sp:").await?;
+    Ok(rows.into_iter().map(|(_, sp)| sp).collect())
+}
+
+pub async fn delete_saml_service_provider(id: &str) -> Result<(), String> {
+    kv_delete(&clients_store(), &format!("saml_sp:{id}")).await
+}
+
+#[derive(Serialize, Deserialize)]
+struct SamlKeyRingPointer {
+    current_version: u32,
+    previous_version: Option<u32>,
+    previous_grace_expires: Option<u64>,
+}
+
+pub async fn get_saml_key_ring() -> Result<Option<SamlKeyRing>, String> {
+    let rows = kv_prefix::<SamlKeyRingPointer>("keys", "saml:key-ring-pointer-v").await?;
+    let Some((_, pointer)) = rows
+        .into_iter()
+        .max_by_key(|(_, pointer)| pointer.current_version)
+    else {
+        return Ok(None);
+    };
+    let current = kv_get("keys", &format!("saml:key-v{}", pointer.current_version))
+        .await?
+        .ok_or("SAML current signing key is missing")?;
+    let previous = match pointer.previous_version {
+        Some(version) => kv_get("keys", &format!("saml:key-v{version}")).await?,
+        None => None,
+    };
+    Ok(Some(SamlKeyRing {
+        current,
+        previous,
+        previous_grace_expires: pointer.previous_grace_expires,
+    }))
+}
+
+pub async fn save_saml_key_ring(ring: &SamlKeyRing) -> Result<(), String> {
+    let current_bytes = serde_json::to_vec(&ring.current).map_err(|e| e.to_string())?;
+    kv_create_raw(
+        "keys",
+        &format!("saml:key-v{}", ring.current.version),
+        &current_bytes,
+        None,
+    )
+    .await?;
+    if let Some(previous) = &ring.previous {
+        let previous_bytes = serde_json::to_vec(previous).map_err(|e| e.to_string())?;
+        let _ = kv_create_raw(
+            "keys",
+            &format!("saml:key-v{}", previous.version),
+            &previous_bytes,
+            None,
+        )
+        .await;
+    }
+    let pointer = SamlKeyRingPointer {
+        current_version: ring.current.version,
+        previous_version: ring.previous.as_ref().map(|previous| previous.version),
+        previous_grace_expires: ring.previous_grace_expires,
+    };
+    let pointer_bytes = serde_json::to_vec(&pointer).map_err(|e| e.to_string())?;
+    kv_create_raw(
+        "keys",
+        &format!("saml:key-ring-pointer-v{}", ring.current.version),
+        &pointer_bytes,
+        None,
+    )
+    .await
+}
+
+pub async fn create_saml_key_ring(ring: &SamlKeyRing) -> Result<(), String> {
+    save_saml_key_ring(ring).await
+}
+
+pub async fn acquire_saml_rotation_lock() -> Result<(), String> {
+    kv_create_raw("keys", "saml:rotation-lock", &[], Some(60))
+        .await
+        .map_err(|e| {
+            if e.contains("already exists") {
+                "concurrent SAML key rotations".to_string()
+            } else {
+                e
+            }
+        })
+}
+
+pub async fn release_saml_rotation_lock() {
+    let _ = kv_delete("keys", "saml:rotation-lock").await;
+}
+
+pub async fn save_saml_flow(session_id: &str, flow: &SamlFlow) -> Result<(), String> {
+    kv_set_ttl(
+        &sessions_store(),
+        &format!("saml_flow:{session_id}"),
+        flow,
+        TTL_AUTH_SESSION,
+    )
+    .await
+}
+
+pub async fn consume_saml_flow(session_id: &str) -> Result<Option<SamlFlow>, String> {
+    let key = format!("saml_flow:{session_id}");
+    match kv_get_revision::<SamlFlow>(&sessions_store(), &key).await? {
+        Some((flow, revision)) => {
+            if kv_cas_delete(&sessions_store(), &key, revision)
+                .await
+                .is_ok()
+            {
+                Ok(Some(flow))
+            } else {
+                Ok(None)
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+pub async fn reserve_saml_request(sp_id: &str, request_id: &str) -> Result<(), String> {
+    let key = format!("saml_request:{}:{}", sp_id, sha256_hex(request_id));
+    kv_create_raw(&sessions_store(), &key, &[], Some(TTL_AUTH_SESSION))
+        .await
+        .map_err(|e| {
+            if e.contains("already exists") {
+                "SAML request has already been used".to_string()
+            } else {
+                e
+            }
+        })
+}
+
+// ── SCIM connection and identity operations ──────────────────
+
+pub async fn save_scim_connection(connection: &ScimConnection) -> Result<(), String> {
+    kv_set(
+        &clients_store(),
+        &format!("scim_connection:{}", connection.id),
+        connection,
+    )
+    .await
+}
+
+pub async fn get_scim_connection(id: &str) -> Result<Option<ScimConnection>, String> {
+    kv_get(&clients_store(), &format!("scim_connection:{id}")).await
+}
+
+pub async fn list_scim_connections() -> Result<Vec<ScimConnection>, String> {
+    let rows = kv_prefix::<ScimConnection>(&clients_store(), "scim_connection:").await?;
+    Ok(rows.into_iter().map(|(_, connection)| connection).collect())
+}
+
+pub async fn delete_scim_connection(id: &str) -> Result<(), String> {
+    kv_delete(&clients_store(), &format!("scim_connection:{id}")).await
+}
+
+fn scim_identity_key(connection_id: &str, external_id: &str) -> String {
+    format!("scim_identity:{connection_id}:{external_id}")
+}
+
+fn scim_user_key(connection_id: &str, user_id: &str) -> String {
+    format!("scim_user:{connection_id}:{user_id}")
+}
+
+pub async fn create_scim_identity(identity: &ScimIdentity) -> Result<(), String> {
+    let bytes = serde_json::to_vec(identity).map_err(|e| e.to_string())?;
+    let primary = scim_identity_key(&identity.connection_id, &identity.external_id);
+    kv_cas_create_raw(&user_idx_store(), &primary, &bytes)
+        .await
+        .map_err(|e| {
+            if e.contains("already exists") {
+                "externalId already provisioned for this connection".to_string()
+            } else {
+                e
+            }
+        })?;
+    let secondary = scim_user_key(&identity.connection_id, &identity.user_id);
+    if let Err(e) = kv_cas_create_raw(&user_idx_store(), &secondary, &bytes).await {
+        let _ = kv_delete(&user_idx_store(), &primary).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
+pub async fn save_scim_identity(identity: &ScimIdentity) -> Result<(), String> {
+    let bytes = serde_json::to_vec(identity).map_err(|e| e.to_string())?;
+    kv_set_raw(
+        &user_idx_store(),
+        &scim_identity_key(&identity.connection_id, &identity.external_id),
+        &bytes,
+    )
+    .await?;
+    kv_set_raw(
+        &user_idx_store(),
+        &scim_user_key(&identity.connection_id, &identity.user_id),
+        &bytes,
+    )
+    .await
+}
+
+pub async fn get_scim_identity(
+    connection_id: &str,
+    external_id: &str,
+) -> Result<Option<ScimIdentity>, String> {
+    kv_get(
+        &user_idx_store(),
+        &scim_identity_key(connection_id, external_id),
+    )
+    .await
+}
+
+pub async fn get_scim_identity_by_user(
+    connection_id: &str,
+    user_id: &str,
+) -> Result<Option<ScimIdentity>, String> {
+    kv_get(&user_idx_store(), &scim_user_key(connection_id, user_id)).await
+}
+
+pub async fn list_scim_identities(connection_id: &str) -> Result<Vec<ScimIdentity>, String> {
+    let rows = kv_prefix::<ScimIdentity>(
+        &user_idx_store(),
+        &format!("scim_identity:{connection_id}:"),
+    )
+    .await?;
+    Ok(rows.into_iter().map(|(_, identity)| identity).collect())
+}
+
+pub async fn delete_scim_identity(identity: &ScimIdentity) -> Result<(), String> {
+    kv_delete(
+        &user_idx_store(),
+        &scim_identity_key(&identity.connection_id, &identity.external_id),
+    )
+    .await?;
+    kv_delete(
+        &user_idx_store(),
+        &scim_user_key(&identity.connection_id, &identity.user_id),
+    )
+    .await
+}
+
 // ── Social identity operations ──────────────────────────────
 
 pub async fn save_social_identity(si: &SocialIdentity) -> Result<(), String> {
@@ -3258,9 +3641,11 @@ mod tests {
             assert_eq!(client.token_endpoint_auth_method.as_deref(), Some("none"));
             assert!(client.first_party);
             assert!(!client.redirect_uris.is_empty());
-            assert!(client
-                .grant_types
-                .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string()));
+            assert!(
+                client
+                    .grant_types
+                    .contains(&"urn:ietf:params:oauth:grant-type:device_code".to_string())
+            );
 
             // Idempotent: re-running keeps the same public-client shape.
             ensure_admin_client("https://idp.example.com", false)

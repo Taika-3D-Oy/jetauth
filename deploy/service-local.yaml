@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jetauth
+  namespace: default
+spec:
+  # wasmCloud's operator manages EndpointSlices directly for this headless service.
+  clusterIP: None
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  ports:
+    - name: http
+      port: 9191
+      protocol: TCP

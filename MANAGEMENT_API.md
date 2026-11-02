@@ -906,6 +906,41 @@ Endpoints available at `/connect/register` or `/oauth/register`:
 
 ---
 
+## SAML Applications and SCIM Provisioning
+
+See [SAML_SCIM.md](SAML_SCIM.md) for protocol setup, support matrices, and lifecycle semantics. Both protocol surfaces are disabled by default and require `saml_enabled=true` and `scim_enabled=true` respectively.
+
+### SAML application management
+
+All endpoints require a superadmin access token.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/saml-service-providers` | List SAML service providers |
+| `POST` | `/api/saml-service-providers` | Create a service provider |
+| `GET` | `/api/saml-service-providers/:id` | Get a service provider |
+| `PUT` | `/api/saml-service-providers/:id` | Partially update a service provider |
+| `DELETE` | `/api/saml-service-providers/:id` | Delete a service provider |
+| `POST` | `/api/saml-signing-key/rotate` | Rotate the dedicated SAML signing key and certificate |
+
+Create accepts `name`, `entity_id`, `acs_urls`, optional `name_id_format` (`email` or `persistent`), `attribute_mappings` as `[name, source]` pairs, optional `request_signing_certificate`, and optional `theme`. Update also accepts `enabled`. The rotation response contains the new public certificate and previous-certificate grace expiry, never private key material.
+
+### SCIM connection management
+
+Tenant admins and superadmins can manage connections for their tenants. Responses never include `token_hash`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/scim/connections` | List connections visible to the caller |
+| `POST` | `/api/scim/connections` | Create a connection and return its raw token once |
+| `PUT` | `/api/scim/connections/:id` | Set `enabled` |
+| `DELETE` | `/api/scim/connections/:id` | Delete a connection |
+| `POST` | `/api/scim/connections/:id/rotate-token` | Return a new raw token once |
+
+Create accepts `name`, `tenant_id`, and optional `default_role` (`admin`, `manager`, or `member`). The actual SCIM resources live under `/scim/v2` and authenticate with the connection token rather than a management access token.
+
+---
+
 ## Standard Error Responses
 
 When an error occurs, the API returns a standard JSON error envelope:

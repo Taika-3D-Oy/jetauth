@@ -6,7 +6,7 @@ Runs as a single wasmCloud WorkloadDeployment with **jetcache** (formerly lattic
 
 ## Status
 
-**v2.0.0-rc.16** (Rebranded from `lattice-id` v1.13.0)
+**v2.0.0-rc.17** (Rebranded from `lattice-id` v1.13.0)
 
 - **Storage Layer & `jetcache` 2.0 Integration**:
   - High-performance native prefix scan operations (`kv_prefix` and `kv_prefix_keys`), eliminating N+1 round-trip latency on user listings, client listings, tenant memberships, consents, hooks, and audit logs.
@@ -148,6 +148,8 @@ bash tests/run_cluster_tests.sh --no-reset
 | `integration_account` | CSRF protection, consent screen (allow/deny/state), first_party flag, GDPR export+delete |
 | `integration_logout` | RP-initiated logout, open-redirect protection, prompt=none/login/consent, /healthz, /readyz |
 | `integration_backchannel` | backchannel logout_token delivery and validation (RFC 8613) |
+| `integration_saml` | SAML metadata, SP-initiated SSO, attributes, replay protection, key rotation |
+| `integration_scim` | SCIM discovery, Users lifecycle, filtering, ETags, tenant isolation, token rotation |
 | `integration_social_mock` | Google OIDC social login with mock IdP |
 | `integration_two_region` | cross-region user lookup, redirect, tenant/client replication |
 
@@ -179,6 +181,7 @@ bash tests/run_cluster_tests.sh --no-reset
 - Self-service account management (password change, email update, passkey enrollment)
 - Email verification and invitation flows
 - Multi-tenant with per-membership roles (`tenant_id`, `role` claims)
+- SAML 2.0 IdP for downstream applications and inbound SCIM 2.0 user provisioning ([SAML_SCIM.md](SAML_SCIM.md))
 
 **Operations**
 - GDPR: data export (`GET /api/users/:id/export`) and erasure (`DELETE /api/users/:id`)

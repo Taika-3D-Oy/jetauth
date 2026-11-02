@@ -111,6 +111,12 @@ pub fn render_layout(
                         a href="/admin/identity-providers" class={"sidebar-link" @if active_nav == "idps" { " active" }} {
                             "Identity Providers"
                         }
+                        a href="/admin/saml" class={"sidebar-link" @if active_nav == "saml" { " active" }} {
+                            "SAML Applications"
+                        }
+                        a href="/admin/scim" class={"sidebar-link" @if active_nav == "scim" { " active" }} {
+                            "SCIM Provisioning"
+                        }
                         a href="/admin/hooks" class={"sidebar-link" @if active_nav == "hooks" { " active" }} {
                             "Hooks"
                         }

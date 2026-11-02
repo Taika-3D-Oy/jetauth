@@ -557,6 +557,12 @@ pub async fn resolve_theme_for_session(session_id: &str) -> ClientTheme {
         Ok(Some(s)) => s,
         _ => return resolve_effective_theme(None, &settings),
     };
+    if let Some(sp_id) = session.client_id.strip_prefix("saml:") {
+        return match store::get_saml_service_provider(sp_id).await {
+            Ok(Some(sp)) => resolve_effective_theme(sp.theme, &settings),
+            _ => resolve_effective_theme(None, &settings),
+        };
+    }
     match store::get_client(&session.client_id).await {
         Ok(Some(c)) => resolve_effective_theme(c.theme, &settings),
         _ => resolve_effective_theme(None, &settings),

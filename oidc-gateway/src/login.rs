@@ -796,6 +796,25 @@ pub async fn complete_login_with_amr(
         .ok_or("Login already in progress. Please wait for the redirect.")?;
     let acr = select_acr(&session, &amr);
 
+    if session.code_challenge_method == "saml" {
+        let response =
+            crate::saml::complete_after_login(session_id, &user, &crate::get_issuer()).await?;
+        let (mut parts, body) = response.into_parts();
+        if let Ok(cookie) = crate::account::create_session_cookie(&user.id).await
+            && let Ok(value) = cookie.parse()
+        {
+            parts.headers.append("set-cookie", value);
+        }
+        if let Ok(cookie) =
+            crate::account::create_idp_session_cookie(&user.id, &amr, crate::store::unix_now())
+                .await
+            && let Ok(value) = cookie.parse()
+        {
+            parts.headers.append("set-cookie", value);
+        }
+        return Ok(Response::from_parts(parts, body));
+    }
+
     // ── Device authorization grant (RFC 8628) ──
     // device::submit() creates an auth session with code_challenge_method = "device"
     // and state = device_code. Do NOT approve the device here: authentication
