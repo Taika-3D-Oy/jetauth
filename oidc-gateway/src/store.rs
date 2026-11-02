@@ -1763,7 +1763,13 @@ pub async fn kv_cache_set<T: Serialize>(key: &str, value: &T, ttl_secs: u64) -> 
 pub async fn create_user(user: &User) -> Result<(), String> {
     // Store user record first (random UUID key, no conflict risk)
     let mut u = user.clone();
-    if u.status == "active" && !u.superadmin && crate::require_email_verification() {
+    let is_federated_or_provisioned =
+        u.password_hash.starts_with("social:") || u.password_hash.starts_with("scim:");
+    if u.status == "active"
+        && !u.superadmin
+        && !is_federated_or_provisioned
+        && crate::require_email_verification()
+    {
         u.status = "pending".to_string();
     }
     kv_set(&users_store(), &format!("user:{}", u.id), &u).await?;

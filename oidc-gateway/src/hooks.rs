@@ -292,9 +292,9 @@ pub async fn apply_outcome(user: &mut User, outcome: &HookOutcome) -> Result<(),
     let mut target_status = None;
     if let Some(active) = outcome.set_active {
         let new_status = if active { "active" } else { "suspended" };
+        target_status = Some(new_status.to_string());
+        changed = true;
         if user.status != new_status {
-            changed = true;
-            target_status = Some(new_status.to_string());
             let _ = store::log_audit(
                 "hook_set_status",
                 "system",
@@ -308,20 +308,44 @@ pub async fn apply_outcome(user: &mut User, outcome: &HookOutcome) -> Result<(),
     if changed {
         let set_sa = outcome.set_superadmin;
         let require_verification = crate::require_email_verification();
-        let status_override = target_status;
+        let status_override = target_status.clone();
+        let in_mem_status = user.status.clone();
+        let mut status_changed_in_kv = false;
         store::update_user_rmw(&user.id, |u| {
+            let mut modified = false;
             if let Some(sa) = set_sa {
-                u.superadmin = sa;
+                if u.superadmin != sa {
+                    u.superadmin = sa;
+                    modified = true;
+                }
                 if sa && !require_verification && u.status != "active" {
                     u.status = "active".to_string();
+                    modified = true;
                 }
             }
-            if let Some(ref st) = status_override {
+            if let Some(ref st) = status_override
+                && u.status != *st
+            {
                 u.status = st.clone();
+                modified = true;
+                if in_mem_status == *st {
+                    status_changed_in_kv = true;
+                }
             }
-            Ok(true)
+            Ok(modified)
         })
         .await?;
+        if status_changed_in_kv
+            && let Some(ref st) = target_status
+        {
+            let _ = store::log_audit(
+                "hook_set_status",
+                "system",
+                &user.id,
+                &format!("status={st}"),
+            )
+            .await;
+        }
         // Keep the cached has_superadmin flag in sync at promotion time so
         // bootstrap gating does not depend on a later user scan.
         if outcome.set_superadmin == Some(true) {
@@ -864,4 +888,89 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.set_active, Some(true));
     }
+
+    #[test]
+    fn test_social_user_stays_active_with_email_verification_and_hook_promotion() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(true, None);
+            assert!(crate::require_email_verification());
+
+            let mut user = User {
+                id: "social-hook-test-1".to_string(),
+                email: "social-hook-1@example.com".to_string(),
+                name: "Social User".to_string(),
+                password_hash: "social:google:sub-123".to_string(),
+                status: "active".to_string(),
+                created_at: 1000,
+                superadmin: false,
+                totp_secret: None,
+                totp_enabled: false,
+                recovery_codes: Vec::new(),
+                passkey_credentials: Vec::new(),
+            };
+            store::create_user(&user).await.unwrap();
+
+            let stored = store::get_user(&user.id).await.unwrap().unwrap();
+            assert_eq!(stored.status, "active");
+
+            let outcome = HookOutcome {
+                set_superadmin: Some(true),
+                set_active: Some(true),
+                ..Default::default()
+            };
+            apply_outcome(&mut user, &outcome).await.unwrap();
+            assert_eq!(user.status, "active");
+            assert!(user.superadmin);
+
+            let stored_after = store::get_user(&user.id).await.unwrap().unwrap();
+            assert_eq!(stored_after.status, "active");
+            assert!(stored_after.superadmin);
+
+            let _ = store::delete_user(&user.id).await;
+        });
+    }
+
+    #[test]
+    fn test_apply_outcome_set_active_activates_pending_kv_user_even_if_in_mem_active() {
+        futures::executor::block_on(async {
+            store::init_config_for_test(true, None);
+
+            let mut user = User {
+                id: "pwd-hook-test-1".to_string(),
+                email: "pwd-hook-1@example.com".to_string(),
+                name: "Password User".to_string(),
+                password_hash: "argon2id:hash".to_string(),
+                status: "active".to_string(),
+                created_at: 1000,
+                superadmin: false,
+                totp_secret: None,
+                totp_enabled: false,
+                recovery_codes: Vec::new(),
+                passkey_credentials: Vec::new(),
+            };
+            // Password user gets downgraded to "pending" in KV by create_user when
+            // require_email_verification() is true, while in-memory `user.status` is "active".
+            store::create_user(&user).await.unwrap();
+            assert_eq!(
+                store::get_user(&user.id).await.unwrap().unwrap().status,
+                "pending"
+            );
+
+            let outcome = HookOutcome {
+                set_superadmin: Some(true),
+                set_active: Some(true),
+                ..Default::default()
+            };
+            apply_outcome(&mut user, &outcome).await.unwrap();
+            assert_eq!(user.status, "active");
+            assert!(user.superadmin);
+
+            let stored_after = store::get_user(&user.id).await.unwrap().unwrap();
+            assert_eq!(stored_after.status, "active");
+            assert!(stored_after.superadmin);
+
+            let _ = store::delete_user(&user.id).await;
+        });
+    }
 }
+

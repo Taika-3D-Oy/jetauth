@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.18] - 2026-11-02
+
+### Fixed
+
+- Preserved `"active"` status for federated/social (`social:*`) and SCIM-provisioned (`scim:*`) users in `store::create_user` when `require_email_verification` is enabled.
+- Fixed `hooks::apply_outcome` so `set_active(true)` / `set_active(false)` is always applied against the stored KV record even when the caller's in-memory `user.status` already matches.
+
 ## [2.0.0-rc.17] - 2026-11-02
 
 ### Added
