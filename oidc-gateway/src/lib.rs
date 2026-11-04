@@ -1679,28 +1679,16 @@ fn index_page() -> Response<String> {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lattice-ID</title>
+<title>JetAuth</title>
 <style>
 body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .card{max-width:720px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:32px;box-shadow:0 10px 30px rgba(15,23,42,.08)}
-h1{margin:0 0 12px;font-size:32px}
-p{line-height:1.6;color:#334155}
-ul{padding-left:20px;color:#334155}
-a{color:#0f766e}
-code{background:#f1f5f9;padding:2px 6px;border-radius:6px}
+h1{margin:0;font-size:32px}
 </style>
 </head>
 <body>
 <main class="card">
-<h1>Lattice-ID</h1>
-<p>This workload serves the OIDC provider and management API. The separate admin UI host is currently experimental and is not bundled into the default gateway build.</p>
-<ul>
-<li>Discovery: <a href="/.well-known/openid-configuration">/.well-known/openid-configuration</a></li>
-<li>JWKS: <a href="/.well-known/jwks.json">/.well-known/jwks.json</a></li>
-<li>Health: <a href="/healthz">/healthz</a></li>
-<li>Readiness: <a href="/readyz">/readyz</a></li>
-</ul>
-<p>Interactive sign-in starts at <code>/authorize</code> with a registered client.</p>
+<h1>JetAuth</h1>
 </main>
 </body>
 </html>"#;
